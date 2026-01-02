@@ -18,6 +18,14 @@ THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABI
 CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
+=== CONFIGURAÇÃO SERVO 360° CONTÍNUO ===
+- Modelo: MG996R 360° (rotação contínua)
+- Pino: Arduino 11 (SPINDLE_PWM da CNC Shield)
+- Conversão: Movimento angular → tempo de rotação
+- Movimento: 45° = 1.1 segundos por direção
+- PWM: 1300µs (sentido A), 1700µs (sentido B), 1500µs (parado)
+- Segurança: Mesmo tempo para ida/volta garante retorno preciso
+
 Adaptado para CNC Shield com Driver DVR8825:
 - Motor Extruder: Eixo Z (Step=4, Dir=7, Enable=8)
 - Motor Selector: Eixo X (Step=2, Dir=5, Enable=8)
@@ -286,10 +294,17 @@ Single Button Press Commands (count pulses of selector)
    // lock the selector by energizing it
    digitalWrite(selEnable, HIGH);
  
-   // make sure filament isn't blocked by gillotine
-   connectGillotine();
-   cutFilament();
-   disconnectGillotine();
+   // REMOVIDO: make sure filament isn't blocked by gillotine
+   // connectGillotine();
+   // cutFilament();  // ← CAUSAVA CORTE NA INICIALIZAÇÃO
+   // disconnectGillotine();
+ 
+   // Servo será inicializado apenas quando necessário (connectGillotine)
+   // Inicialização mínima sem movimento para evitar primeira falha
+   filamentCutter.attach(11);
+   filamentCutter.writeMicroseconds(1500); // Centro/parado
+   delay(100);
+   filamentCutter.detach(); // Desconectar até precisar
    
    prevCommand = 0;
  
@@ -466,12 +481,22 @@ Single Button Press Commands (count pulses of selector)
        if(loaderMode>0)rotateExtruder(clockwise, unloadDistance);
      }
      disconnectGillotine();
+     // Garantir que o servo seja reinicializado após unload/home
+     connectGillotine();
+     filamentCutter.writeMicroseconds(1500); // Centro/parado
+     delay(200);
+     disconnectGillotine();
      displayText(50, "        Idle");
      break;
  
-   case 8:  
+   case 8:
      displayText(40, "     Homing...");
      homeSelector();
+     // Garantir que o servo seja reinicializado após home
+     connectGillotine();
+     filamentCutter.writeMicroseconds(1500); // Centro/parado
+     delay(200);
+     disconnectGillotine();
      displayText(50, "        Idle");
      break;
  
@@ -755,26 +780,50 @@ Single Button Press Commands (count pulses of selector)
    digitalWrite(selEnable, HIGH); // unlock the selector (HIGH = disable para DVR8825)
  }
  
- // this cycles the servo between two positions
+ // this cycles the servo between two positions (ADAPTADO PARA SERVO 360° CONTÍNUO)
  void cutFilament() {
    digitalWrite(selEnable, LOW); // enable stepper power for servo operation (LOW = enable para DVR8825)
-   if(reverseServo==false)
-   {
-     openGillotine();
-     closeGillotine();
-   }
-   else
-   {
-     closeGillotine();
-     openGillotine();
-   }
+ 
+   // Garantir que o servo esteja pronto antes do movimento
+   filamentCutter.writeMicroseconds(1500); // Centro/parado
+   delay(300); // Estabilização extra para primeira chamada
+ 
+   // === ADAPTAÇÃO PARA SERVO 360° CONTÍNUO ===
+   // Código original usava ângulos: 135° → 180° → 135° (45° em cada direção)
+   // Servo 360° não tem ângulos - converte movimento angular em TEMPO de rotação
+   //
+   // AJUSTADO: Movimento EQUILIBRADO e simétrico
+   // - Tempo: 0.3s por direção (movimento rápido)
+   // - PWM simétrico: 1300µs e 1700µs (±200µs do centro 1500µs)
+   // - Movimento igual nos dois sentidos para retorno preciso
+ 
+   // Sentido A: abrir/cortar (equivalente ao openGillotine original)
+   filamentCutter.writeMicroseconds(1300); // PWM: -200µs do centro (sentido horário)
+   delay(300); // Tempo fixo: 0.3s
+ 
+   // Parar momentaneamente
+   filamentCutter.writeMicroseconds(1500); // PWM: centro/parado
+   delay(100); // Pausa breve
+ 
+   // Sentido B: fechar/retornar (equivalente ao closeGillotine original)
+   filamentCutter.writeMicroseconds(1700); // PWM: +200µs do centro (sentido anti-horário)
+   delay(300); // Mesmo tempo para movimento simétrico
+ 
+   // Parar na posição original
+   filamentCutter.writeMicroseconds(1500); // PWM: centro/parado
+   delay(100); // Pausa final
+ 
    digitalWrite(selEnable, HIGH); // disable stepper (HIGH = disable para DVR8825)
+   // NOTA: Não fazer detach aqui - deixar para disconnectGillotine()
  }
  
  // enable the servo
  void connectGillotine()
  {
    filamentCutter.attach(11);
+   // Inicializar servo na posição parada para evitar movimento inesperado
+   filamentCutter.writeMicroseconds(1500); // Centro/parado
+   delay(500); // Aguardar estabilização (aumentado para primeira chamada)
  }
  
  // disable the servo - so it doesn't chatter when not in use
@@ -783,27 +832,9 @@ Single Button Press Commands (count pulses of selector)
    filamentCutter.detach();
  }
  
- // cycle servo from 135 and 180
- void openGillotine()
- {
-     for (int pos = 135; pos <= 180; pos += 1) { // goes from 0 degrees to 180 degrees
-     // in steps of 1 degree
-     filamentCutter.write(pos);              // tell servo to go to position in variable 'pos'
-     delayMicroseconds(25000);                       // waits 15ms for the servo to reach the position
-   }
-   //filamentCutter.write(3.5);       // tell servo to go to position in variable 'pos'
-   delay(50);                       // waits 15ms for the servo to reach the position
- }
- 
- // reverse cycle servo from 180 back to 135
- void closeGillotine()
- {
-   for (int pos = 180; pos >= 135; pos -= 1) { // goes from 180 degrees to 0 degrees
-     filamentCutter.write(pos);              // tell servo to go to position in variable 'pos'
-     delayMicroseconds(25000);                       // waits 15ms for the servo to reach the position
-   }
-   delay(50);                       // waits 15ms for the servo to reach the position
- }
+ // FUNÇÕES REMOVIDAS - SUBSTITUÍDAS POR LÓGICA DE TEMPO PARA SERVO 360°
+ // openGillotine() e closeGillotine() não são mais necessárias
+ // O movimento angular foi convertido em tempo de rotação
  
  // rotate the selector clockwise too far from 4, so it'll grind on the bump stop
  void homeSelector()
