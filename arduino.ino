@@ -35,14 +35,23 @@ Adaptado para CNC Shield com Driver DVR8825:
 Single Button Press Commands (count pulses of selector)
 
 #1 - 1
-#2 - 2
-#3 - 3
-#4 - 4
-#5 - Home and Load
-#6 - Unload Last and Home
-#7 - Home
-#8 - Next Filament
-#9 - Random Filament
+#2 - 2 (Switch to T0)
+#3 - 3 (Switch to T1)
+#4 - 4 (Switch to T2)
+#5 - 5 (Switch to T3)
+#6 - Home and Load
+#7 - Unload Last and Home
+#8 - Home
+#9 - Next Filament
+#10 - Random Filament
+#11 - Load T0 (no cut - for unused filaments)
+#12 - Load T1 (no cut - for unused filaments)
+#13 - Load T2 (no cut - for unused filaments)
+#14 - Load T3 (no cut - for unused filaments)
+#15 - Unload T0 (no cut - for unused filaments)
+#16 - Unload T1 (no cut - for unused filaments)
+#17 - Unload T2 (no cut - for unused filaments)
+#18 - Unload T3 (no cut - for unused filaments)
 
 */
 
@@ -73,12 +82,13 @@ Single Button Press Commands (count pulses of selector)
  *    - PC817C Optocoupler: A3 (com debounce para evitar pulsos fantasmas)
  */
 
- #include <SSD1306Ascii.h> //i2C OLED
- #include <SSD1306AsciiWire.h> //i2C OLED
- #include <SparkFunSX1509.h> // sparkfun i/o expansion board - used for additional filament sensors as well as communications with secondary boards
- #include <Wire.h>
- #include <SPI.h>
- #include <Servo.h>
+#include <SSD1306Ascii.h> //i2C OLED
+#include <SSD1306AsciiWire.h> //i2C OLED
+#include <SparkFunSX1509.h> // sparkfun i/o expansion board - used for additional filament sensors as well as communications with secondary boards
+#include <Wire.h>
+#include <SPI.h>
+#include <Servo.h>
+#include <EEPROM.h> // Para armazenar estado persistentemente
  
  #define SCREEN_WIDTH 128 // OLED display width, in pixels
  #define SCREEN_HEIGHT 64 // OLED display height, in pixels
@@ -235,11 +245,12 @@ Single Button Press Commands (count pulses of selector)
  
  long randomNumber = 0;
  
- void setup()
- {
- 
-   Wire.begin(); //start i2C  
-   Wire.setClock(400000L); //set clock
+void setup()
+{
+
+  Serial.begin(9600); // Inicializar comunicação serial para debug
+  Wire.begin(); //start i2C
+  Wire.setClock(400000L); //set clock
  
    // set up IO expander
    if (io.begin(SX1509_ADDRESS) == true)
@@ -291,24 +302,42 @@ Single Button Press Commands (count pulses of selector)
    pinMode(s_limit, OUTPUT);
    pinMode(filament, OUTPUT); 
  
-   // lock the selector by energizing it
-   digitalWrite(selEnable, HIGH);
- 
-   // REMOVIDO: make sure filament isn't blocked by gillotine
-   // connectGillotine();
-   // cutFilament();  // ← CAUSAVA CORTE NA INICIALIZAÇÃO
-   // disconnectGillotine();
- 
-   // Servo será inicializado apenas quando necessário (connectGillotine)
-   // Inicialização mínima sem movimento para evitar primeira falha
-   filamentCutter.attach(11);
-   filamentCutter.writeMicroseconds(1500); // Centro/parado
-   delay(100);
-   filamentCutter.detach(); // Desconectar até precisar
-   
-   prevCommand = 0;
- 
- }
+  // lock the selector by energizing it
+  digitalWrite(selEnable, HIGH);
+
+  // CARREGAR ESTADO PERSISTENTE DA EEPROM
+  // Endereço 0: currentExtruder, Endereço 1: lastExtruder
+  int savedCurrent = EEPROM.read(0);
+  int savedLast = EEPROM.read(1);
+
+  // Verificar se os valores são válidos (0-3 para extrusores)
+  if(savedCurrent >= 0 && savedCurrent <= 3) {
+    currentExtruder = savedCurrent;
+  } else {
+    currentExtruder = 0; // Valor padrão se inválido
+  }
+
+  if(savedLast >= -2 && savedLast <= 3) { // -2 é posição de home
+    lastExtruder = savedLast;
+  } else {
+    lastExtruder = -2; // Valor padrão se inválido
+  }
+
+  // REMOVIDO: make sure filament isn't blocked by gillotine
+  // connectGillotine();
+  // cutFilament();  // ← CAUSAVA CORTE NA INICIALIZAÇÃO
+  // disconnectGillotine();
+
+  // Servo será inicializado apenas quando necessário (connectGillotine)
+  // Inicialização mínima sem movimento para evitar primeira falha
+  filamentCutter.attach(11);
+  filamentCutter.writeMicroseconds(1500); // Centro/parado
+  delay(100);
+  filamentCutter.detach(); // Desconectar até precisar
+
+  prevCommand = 0;
+
+}
  
  int lastLoop = 0;
  
@@ -328,6 +357,12 @@ Single Button Press Commands (count pulses of selector)
      unsigned long pulseCount = 0;
      unsigned long commandCount = 0;
  
+       // CONTAGEM DE PULSOS: Sistema conta tempo de pressão, não pulsos reais
+     // - Cada "pulso" = 400ms de pressão contínua no botão
+     // - Pressão rápida pode ser contada como múltiplos pulsos
+     // - Ex: 1 pressão rápida = ~2 pulsos, dependendo da duração
+     // - Para 1 pulso real: pressione por exatamente 400ms
+     // - Para 2 pulsos: pressione por 800ms (2x400ms)
      // keep counting (and pulsing) until button is released
      while (digitalRead(trigger) == 0)
      {
@@ -399,6 +434,30 @@ Single Button Press Commands (count pulses of selector)
    case 10:
      displayText(40, "       Random");
      break;
+   case 11:
+     displayText(40, "    Load T0*");
+     break;
+   case 12:
+     displayText(40, "    Load T1*");
+     break;
+   case 13:
+     displayText(40, "    Load T2*");
+     break;
+   case 14:
+     displayText(40, "    Load T3*");
+     break;
+   case 15:
+     displayText(35, "   Unload T0*");
+     break;
+   case 16:
+     displayText(35, "   Unload T1*");
+     break;
+   case 17:
+     displayText(35, "   Unload T2*");
+     break;
+   case 18:
+     displayText(35, "   Unload T3*");
+     break;
    default:
      displayText(30, "     No Command");
      break;
@@ -412,44 +471,50 @@ Single Button Press Commands (count pulses of selector)
    // select case for commands
    switch (commandCount)
    {
-   case 2: // unload current, switch to #0, load
-     displayText(30, "     T0 Selected");
-     currentExtruder = 0;
-     processMoves();
-     displayText(35, "      Idle - T0");
-     break;
- 
-   case 3: // unload current, switch to #1, load
-     displayText(30, "     T1 Selected");
-     currentExtruder = 1;
-     processMoves();
-     displayText(35, "      Idle - T1");
-     break;
- 
-   case 4: // unload current, switch to #3, load
-     displayText(30, "     T2 Selected");
-     currentExtruder = 2;
-     processMoves();
-     displayText(35, "      Idle - T2");
-     break;
- 
-   case 5: // unload current, switch to #4, load
-     displayText(30, "     T3 Selected");
-     currentExtruder = 3;
-     processMoves();
-     displayText(35, "      Idle - T3");
-     break;
+  case 2: // unload current, switch to #0, load
+    displayText(30, "     T0 Selected");
+    currentExtruder = 0;
+    EEPROM.write(0, currentExtruder); // Salvar estado
+    processMoves();
+    displayText(35, "      Idle - T0");
+    break;
+
+  case 3: // unload current, switch to #1, load
+    displayText(30, "     T1 Selected");
+    currentExtruder = 1;
+    EEPROM.write(0, currentExtruder); // Salvar estado
+    processMoves();
+    displayText(35, "      Idle - T1");
+    break;
+
+  case 4: // unload current, switch to #3, load
+    displayText(30, "     T2 Selected");
+    currentExtruder = 2;
+    EEPROM.write(0, currentExtruder); // Salvar estado
+    processMoves();
+    displayText(35, "      Idle - T2");
+    break;
+
+  case 5: // unload current, switch to #4, load
+    displayText(30, "     T3 Selected");
+    currentExtruder = 3;
+    EEPROM.write(0, currentExtruder); // Salvar estado
+    processMoves();
+    displayText(35, "      Idle - T3");
+    break;
  
    case 6: //home and reload #1
      displayText(40, "      Homing...");
      homeSelector();
      displayText(15, "   Press to Load T0");
-     gotoExtruder(0, 0);
-     if(loaderMode>0)rotateExtruder(clockwise, loadDistance);
-     if(loaderMode>0)gotoExtruder(0, 1);
-     currentExtruder = 0;
-     lastExtruder = 0;
-     displayText(35, "      Idle - T0");
+    gotoExtruder(0, 0);
+    if(loaderMode>0)rotateExtruder(clockwise, loadDistance);
+    if(loaderMode>0)gotoExtruder(0, 1);
+    currentExtruder = 0;
+    lastExtruder = 0;
+    EEPROM.write(0, currentExtruder); // Salvar estado
+    EEPROM.write(1, lastExtruder);    // Salvar estado
+    displayText(35, "      Idle - T0");
      break;
      
    case 7: // unload current and rehome selector
@@ -529,71 +594,190 @@ Single Button Press Commands (count pulses of selector)
      processMoves();
      displayText(50, "        Idle");
      break;
-     
+
+   case 11: // Load T0 directly (no cutting - for unused filaments)
+     displayText(30, "     Loading T0");
+     displayText(15, "   Press to Load T0");
+     gotoExtruder(lastExtruder, 0);
+     if(loaderMode>0)rotateExtruder(clockwise, loadDistance);
+     if(loaderMode>0)gotoExtruder(0, 1);
+     currentExtruder = 0;
+     lastExtruder = 0;
+     EEPROM.write(0, currentExtruder); // Salvar estado
+     EEPROM.write(1, lastExtruder);    // Salvar estado
+     displayText(35, "      Idle - T0");
+     break;
+
+   case 12: // Load T1 directly (no cutting - for unused filaments)
+     displayText(30, "     Loading T1");
+     displayText(15, "   Press to Load T1");
+     gotoExtruder(lastExtruder, 1);
+     if(loaderMode>0)rotateExtruder(clockwise, loadDistance);
+     if(loaderMode>0)gotoExtruder(1, 2);
+     currentExtruder = 1;
+     lastExtruder = 1;
+     EEPROM.write(0, currentExtruder); // Salvar estado
+     EEPROM.write(1, lastExtruder);    // Salvar estado
+     displayText(35, "      Idle - T1");
+     break;
+
+   case 13: // Load T2 directly (no cutting - for unused filaments)
+     displayText(30, "     Loading T2");
+     displayText(15, "   Press to Load T2");
+     gotoExtruder(lastExtruder, 2);
+     if(loaderMode>0)rotateExtruder(counterclockwise, loadDistance);
+     if(loaderMode>0)gotoExtruder(2, 3);
+     currentExtruder = 2;
+     lastExtruder = 2;
+     EEPROM.write(0, currentExtruder); // Salvar estado
+     EEPROM.write(1, lastExtruder);    // Salvar estado
+     displayText(35, "      Idle - T2");
+     break;
+
+   case 14: // Load T3 directly (no cutting - for unused filaments)
+     displayText(30, "     Loading T3");
+     displayText(15, "   Press to Load T3");
+     gotoExtruder(lastExtruder, 3);
+     if(loaderMode>0)rotateExtruder(counterclockwise, loadDistance);
+     if(loaderMode>0)gotoExtruder(3, 0);
+     currentExtruder = 3;
+     lastExtruder = 3;
+     EEPROM.write(0, currentExtruder); // Salvar estado
+     EEPROM.write(1, lastExtruder);    // Salvar estado
+     displayText(35, "      Idle - T3");
+     break;
+
+   case 15: // Unload T0 directly (no cutting - for unused filaments)
+     displayText(30, "    Unloading T0");
+     displayText(10, "  Press to Unload T0");
+     if(lastExtruder != 0) gotoExtruder(lastExtruder, 0);
+     if(loaderMode>0)rotateExtruder(counterclockwise, unloadDistance);
+     currentExtruder = 0;
+     lastExtruder = 0;
+     EEPROM.write(0, currentExtruder); // Salvar estado
+     EEPROM.write(1, lastExtruder);    // Salvar estado
+     displayText(35, "      Idle - T0");
+     break;
+
+   case 16: // Unload T1 directly (no cutting - for unused filaments)
+     displayText(30, "    Unloading T1");
+     displayText(10, "  Press to Unload T1");
+     if(lastExtruder != 1) gotoExtruder(lastExtruder, 1);
+     if(loaderMode>0)rotateExtruder(counterclockwise, unloadDistance);
+     currentExtruder = 1;
+     lastExtruder = 1;
+     EEPROM.write(0, currentExtruder); // Salvar estado
+     EEPROM.write(1, lastExtruder);    // Salvar estado
+     displayText(35, "      Idle - T1");
+     break;
+
+   case 17: // Unload T2 directly (no cutting - for unused filaments)
+     displayText(30, "    Unloading T2");
+     displayText(10, "  Press to Unload T2");
+     if(lastExtruder != 2) gotoExtruder(lastExtruder, 2);
+     if(loaderMode>0)rotateExtruder(clockwise, unloadDistance);
+     currentExtruder = 2;
+     lastExtruder = 2;
+     EEPROM.write(0, currentExtruder); // Salvar estado
+     EEPROM.write(1, lastExtruder);    // Salvar estado
+     displayText(35, "      Idle - T2");
+     break;
+
+   case 18: // Unload T3 directly (no cutting - for unused filaments)
+     displayText(30, "    Unloading T3");
+     displayText(10, "  Press to Unload T3");
+     if(lastExtruder != 3) gotoExtruder(lastExtruder, 3);
+     if(loaderMode>0)rotateExtruder(clockwise, unloadDistance);
+     currentExtruder = 3;
+     lastExtruder = 3;
+     EEPROM.write(0, currentExtruder); // Salvar estado
+     EEPROM.write(1, lastExtruder);    // Salvar estado
+     displayText(35, "      Idle - T3");
+     break;
+
    default:
      displayText(47, "       Clear");
      delay(200);
- 
+
      displayText(50, "        Idle");
      break;
    }
  }
  
- // just the routine to update the OLED
- void displayText(int offset, String str)
- {
- 
-   //if(displayEnabled){
-     oled.clear();
-     oled.println("");
-     oled.println("   3DChameleon Mk4"); //print a welcome message
-     oled.println("");
-     oled.println("");
-     oled.println(str);
-     oled.println("");
-     oled.println("");
-     if(ioEnabled)
-     {
-       oled.print("     ");
-       if(T0Loaded)
-       {
-         oled.print("0  ");
-       }
-       else
-       {
-         oled.print("+  ");
-       }
-       if(T1Loaded)
-       {
-         oled.print("1  ");
-       }
-       else
-       {
-         oled.print("+  ");
-       }
-       if(T2Loaded)
-       {
-         oled.print("2  ");
-       }
-       else
-       {
-         oled.print("+  ");
-       }
-       if(T3Loaded)
-       {
-         oled.println("3");
-       }
-       else
-       {
-         oled.println("+");
-       }
-     }
-     else
-     {
-       oled.println("     -  -  -  -");
-     }
-   //  }
- }
+// just the routine to update the OLED and Serial console
+void displayText(int offset, String str)
+{
+
+  // Display no console Serial
+  Serial.println("=== 3DChameleon Mk4 ===");
+  Serial.println(str);
+
+  //if(displayEnabled){
+    oled.clear();
+    oled.println("");
+    oled.println("   3DChameleon Mk4"); //print a welcome message
+    oled.println("");
+    oled.println("");
+    oled.println(str);
+    oled.println("");
+    oled.println("");
+    if(ioEnabled)
+    {
+      oled.print("     ");
+      String statusStr = "     ";
+
+      if(T0Loaded)
+      {
+        oled.print("0  ");
+        statusStr += "0  ";
+      }
+      else
+      {
+        oled.print("+  ");
+        statusStr += "+  ";
+      }
+      if(T1Loaded)
+      {
+        oled.print("1  ");
+        statusStr += "1  ";
+      }
+      else
+      {
+        oled.print("+  ");
+        statusStr += "+  ";
+      }
+      if(T2Loaded)
+      {
+        oled.print("2  ");
+        statusStr += "2  ";
+      }
+      else
+      {
+        oled.print("+  ");
+        statusStr += "+  ";
+      }
+      if(T3Loaded)
+      {
+        oled.println("3");
+        statusStr += "3";
+      }
+      else
+      {
+        oled.println("+");
+        statusStr += "+";
+      }
+
+      Serial.println(statusStr);
+    }
+    else
+    {
+      oled.println("     -  -  -  -");
+      Serial.println("     -  -  -  -");
+    }
+
+    Serial.println("=======================");
+  //  }
+}
  
  // real work is here
  void processMoves()
@@ -677,8 +861,10 @@ Single Button Press Commands (count pulses of selector)
    // if we're loading, then load it now
    if(loaderMode>0)gotoExtruder(currentExtruder, (currentExtruder==3?2:currentExtruder+1));
  
-   // everybody remember where we parked!
-   lastExtruder = currentExtruder;
+  // everybody remember where we parked!
+  lastExtruder = currentExtruder;
+  EEPROM.write(0, currentExtruder); // Salvar estado
+  EEPROM.write(1, lastExtruder);    // Salvar estado
  }
  
  
@@ -836,19 +1022,29 @@ Single Button Press Commands (count pulses of selector)
  // openGillotine() e closeGillotine() não são mais necessárias
  // O movimento angular foi convertido em tempo de rotação
  
- // rotate the selector clockwise too far from 4, so it'll grind on the bump stop
- void homeSelector()
- {
-   // rotate counter clockwise to hard stop
-   rotateSelector(clockwise, stepsPerRev * microSteps);
- 
-   // move just slightly to extruder 1 (this backs off a little from the hard stop)
-   rotateSelector(counterclockwise, defaultBackoff * microSteps);
- 
-  currentExtruder = 0;
-  lastExtruder = -2;
- 
- }
+// rotate the selector clockwise too far from 4, so it'll grind on the bump stop
+void homeSelector()
+{
+  // rotate counter clockwise to hard stop
+  rotateSelector(clockwise, stepsPerRev * microSteps);
+
+  // move just slightly to extruder 1 (this backs off a little from the hard stop)
+  rotateSelector(counterclockwise, defaultBackoff * microSteps);
+
+  // NÃO sobrescrever se já temos estado válido da EEPROM
+  // Apenas definir valores padrão se necessário
+  if(currentExtruder < 0 || currentExtruder > 3) {
+    currentExtruder = 0;
+  }
+  if(lastExtruder < -2 || lastExtruder > 3) {
+    lastExtruder = -2;
+  }
+
+  // Salvar estado na EEPROM
+  EEPROM.write(0, currentExtruder);
+  EEPROM.write(1, lastExtruder);
+
+}
  
  // buzz buzz buzz
  void vibrateMotor()
