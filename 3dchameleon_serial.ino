@@ -1,3 +1,4 @@
+
 // December 2024 - Adapted for Arduino Uno + CNC Shield with Serial Communication
 
 /* 3DChameleon Mk4.1 Firmware - Arduino Uno CNC Shield Version with Serial Interface
@@ -68,6 +69,9 @@ CLEAR_EEPROM - Clear EEPROM (testing only)
 
 // Servo pin (compatible with Arduino Uno)
 #define SERVO_PIN 11
+
+// Filament sensor pin (NC - Normally Closed)
+#define FILAMENT_SENSOR_PIN A3
 
 const int counterclockwise = HIGH;
 const int clockwise = !counterclockwise;
@@ -155,9 +159,10 @@ void setup()
 
   Serial.println("3DChameleon Mk4 - Arduino Uno CNC Shield");
   Serial.println("Serial Interface Ready!");
+  Serial.println("Filament Sensor: ENABLED (A3 - NC switch)");
   Serial.println("Available commands:");
   Serial.println("T0, T1, T2, T3 (tool selection), HOME, IDLE, CUT, STATUS, CLEAR_EEPROM");
-  Serial.println("LOAD <distance_mm> (load on current tool)");
+  Serial.println("LOAD <distance_mm> (load on current tool - uses sensor)");
   Serial.println("UNLOAD <distance_mm> (unload from current tool)");
   Serial.println();
 
@@ -172,6 +177,9 @@ void setup()
   pinMode(selStep, OUTPUT);
   pinMode(selDir, OUTPUT);
 
+  // Filament sensor setup (NC - Normally Closed, INPUT_PULLUP)
+  pinMode(FILAMENT_SENSOR_PIN, INPUT_PULLUP);
+
   // No button setup needed for serial communication
 
   // lock the selector by energizing it - keep locked 100% of time
@@ -183,6 +191,13 @@ void setup()
   disconnectGillotine();
 
   prevCommand = 0;
+
+
+  // if (digitalRead(FILAMENT_SENSOR_PIN) == HIGH) { // Sensor triggered (filament detected)
+  //   Serial.println("Sensor de filamento detectado!");
+  // }else{
+  //   Serial.println("Sensor de filamento nao detectado!");
+  // }
 
 }
 
@@ -374,6 +389,78 @@ void cutFilamentOnly()
   Serial.println("Filamento cortado");
 }
 
+// Load filament until sensor is triggered, then continue with specified distance
+long loadUntilSensor(bool direction, float additionalDistance_mm)
+{
+  Serial.println("Carregando filamento ate o sensor...");
+
+  digitalWrite(extEnable, LOW);  // lock the motor
+  digitalWrite(extDir, direction); // Set direction
+
+  long stepsToSensor = 0;
+  long maxSteps = (long)(1000.0 * STEPS_PER_MM); // Maximum 1000mm to prevent infinite loop
+  bool sensorTriggered = false;
+
+  // Move slowly until sensor is triggered (NC sensor goes HIGH when filament blocks it)
+  const int sensorSpeed = speedDelay/3 ; // Slower speed for sensor detection
+
+  while (stepsToSensor < maxSteps && !sensorTriggered) {
+    // Check sensor state (NC = HIGH when filament is present)
+    if (digitalRead(FILAMENT_SENSOR_PIN) == HIGH) { // Sensor triggered (filament detected)
+      sensorTriggered = true;
+      Serial.println("Sensor de filamento detectado!");
+      break;
+    }
+
+    // Move one step
+    digitalWrite(extStep, HIGH);
+    delayMicroseconds(sensorSpeed);
+    digitalWrite(extStep, LOW);
+    delayMicroseconds(sensorSpeed);
+
+    stepsToSensor++;
+  }
+
+  if (!sensorTriggered) {
+    Serial.println("ERRO: Sensor nao detectado apos movimento maximo!");
+    digitalWrite(extEnable, HIGH);
+    return 0;
+  }
+
+  Serial.print("Filamento posicionado no sensor. Movimentacao ate sensor: ");
+  Serial.print((float)stepsToSensor / STEPS_PER_MM);
+  Serial.println("mm");
+
+  // Now continue with the specified additional distance
+  if (additionalDistance_mm > 0) {
+    long additionalSteps = (long)(additionalDistance_mm * STEPS_PER_MM);
+    Serial.print("Continuando com distancia adicional: ");
+    Serial.print(additionalDistance_mm);
+    Serial.println("mm");
+
+    // Set back to original direction
+    digitalWrite(extDir, direction);
+
+    // Move the additional distance
+    for (long i = 0; i < additionalSteps; i++) {
+      digitalWrite(extStep, HIGH);
+      delayMicroseconds(sensorSpeed);
+      digitalWrite(extStep, LOW);
+      delayMicroseconds(sensorSpeed);
+    }
+  }
+
+  // Disable motor
+  digitalWrite(extEnable, HIGH);
+
+  long totalSteps = stepsToSensor + (long)(additionalDistance_mm * STEPS_PER_MM);
+  Serial.print("Movimento total concluido: ");
+  Serial.print((float)totalSteps / STEPS_PER_MM);
+  Serial.println("mm");
+
+  return totalSteps;
+}
+
 // Execute LOAD/UNLOAD commands with specific distance
 void executeLoadUnload(int toolNumber, bool isLoad, float distance_mm)
 {
@@ -382,9 +469,6 @@ void executeLoadUnload(int toolNumber, bool isLoad, float distance_mm)
   Serial.print(" ");
   Serial.print(distance_mm);
   Serial.println("mm");
-
-  // Calculate steps from mm
-  long steps = (long)(distance_mm * STEPS_PER_MM);
 
   // If this is different from current tool, move to the tool first
   if (currentExtruder != toolNumber) {
@@ -398,15 +482,20 @@ void executeLoadUnload(int toolNumber, bool isLoad, float distance_mm)
   if (isLoad) {
     // Load direction: clockwise for T0,T1, counterclockwise for T2,T3
     direction = (toolNumber < 2) ? clockwise : counterclockwise;
-    Serial.println("Executando LOAD...");
+    Serial.println("Executando LOAD com sensor...");
+
+    // Use sensor-based loading for LOAD operations
+    loadUntilSensor(direction, distance_mm);
+
   } else {
     // Unload direction: opposite of load
     direction = (toolNumber < 2) ? counterclockwise : clockwise;
     Serial.println("Executando UNLOAD...");
-  }
 
-  // Execute the movement
-  rotateExtruder(direction, steps);
+    // Use traditional distance-based movement for UNLOAD
+    long steps = (long)(distance_mm * STEPS_PER_MM);
+    rotateExtruder(direction, steps);
+  }
 
   // Update last extruder
   lastExtruder = toolNumber;
@@ -435,9 +524,13 @@ void sendStatus()
     Serial.println("None");
   }
 
+  Serial.print("Filament Sensor (A3): ");
+  int sensorState = digitalRead(FILAMENT_SENSOR_PIN);
+  Serial.println(sensorState == HIGH ? "TRIGGERED (Filament Present)" : "NOT TRIGGERED (No Filament)");
+
   Serial.println("Available Commands:");
   Serial.println("T0, T1, T2, T3 (tool selection), HOME, IDLE, CUT, STATUS, CLEAR_EEPROM");
-  Serial.println("LOAD <distance_mm> (load on current tool)");
+  Serial.println("LOAD <distance_mm> (load on current tool - uses sensor)");
   Serial.println("UNLOAD <distance_mm> (unload from current tool)");
 }
 
