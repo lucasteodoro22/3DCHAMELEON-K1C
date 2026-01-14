@@ -398,7 +398,7 @@ long loadUntilSensor(bool direction, float additionalDistance_mm)
   digitalWrite(extDir, direction); // Set direction
 
   long stepsToSensor = 0;
-  long maxSteps = (long)(1000.0 * STEPS_PER_MM); // Maximum 1000mm to prevent infinite loop
+  long maxSteps = (long)(2000.0 * STEPS_PER_MM); // Maximum 2000mm to prevent infinite loop
   bool sensorTriggered = false;
 
   // Move slowly until sensor is triggered (NC sensor goes HIGH when filament blocks it)
