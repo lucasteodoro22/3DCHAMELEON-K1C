@@ -41,10 +41,13 @@ UNLOAD <distance> - Unload filament from current tool position with specified di
 System Commands:
 HOME - Home selector only
 IDLE - Move selector to idle position
-CUT - Cut filament (activate gillotine)
-STATUS - Get current status
-CLEAR_EEPROM - Clear EEPROM (testing only)
 
+
+Posições Idle 
+T0 → idle em T2 
+T1 → idle em T3
+T2 → idle em T0
+T3 → idle em T1
 */
 
 #include <SPI.h>
@@ -91,8 +94,6 @@ int nextExtruder = 0;
 int lastExtruder = -1;
 int tempExtruder = -1;
 
-int seenCommand = 0;
-int prevCommand = 0;
 
 int loaderMode = 1;  //(0= direct drive, 1=loader/unloader - automatic mode)
 
@@ -104,7 +105,7 @@ bool commandReceived = false;
 long distance = 10;
 
 // Steps per mm calculation (calibrated for your setup)
-const float STEPS_PER_MM = 77.0; // Final calibrated value
+const float STEPS_PER_MM = 151.0; // Calibrated: 100mm command = 51mm actual -> need ~2x more steps
 
 long unloadDistance = stepsPerRev * microSteps * distance;  // this is 10 revs - about 10"
 long loadDistance   = unloadDistance * 1.1;           // this is 11 revs - about 11"
@@ -112,18 +113,6 @@ long loadDistance   = unloadDistance * 1.1;           // this is 11 revs - about
 int address = 0;
 byte value;
 
-long idleCount = 0;
-bool logoActive = false;
-bool T0Loaded = false;
-bool T1Loaded = false;
-bool T2Loaded = false;
-bool T3Loaded = false;
-
-
-bool displayEnabled = false;
-bool ioEnabled = false;
-
-long randomNumber = 0;
 
 // EEPROM addresses
 #define EEPROM_EXTRUDER_ADDR 0  // Address to store current extruder
@@ -141,32 +130,11 @@ int loadSavedExtruder() {
 void setup()
 {
 
-  // CNC Shield doesn't have IO expander - filament sensors not available
-  ioEnabled = false;
-
   // Serial output instead of OLED
   Serial.begin(9600);
 
-  // Load saved extruder from EEPROM
-  lastExtruder = loadSavedExtruder();
-  if(lastExtruder >= 0 && lastExtruder <= 3) {
-    Serial.print("Extrusor salvo na EEPROM: T");
-    Serial.println(lastExtruder);
-  } else {
-    Serial.println("Nenhum extrusor salvo na EEPROM");
-    lastExtruder = -1;
-  }
-
   Serial.println("3DChameleon Mk4 - Arduino Uno CNC Shield");
   Serial.println("Serial Interface Ready!");
-  Serial.println("Filament Sensor: ENABLED (A3 - NC switch)");
-  Serial.println("Available commands:");
-  Serial.println("T0, T1, T2, T3 (tool selection), HOME, IDLE, CUT, STATUS, CLEAR_EEPROM");
-  Serial.println("LOAD <distance_mm> (load on current tool - uses sensor)");
-  Serial.println("UNLOAD <distance_mm> (unload from current tool)");
-  Serial.println();
-
-  seenCommand = 0;
 
   // Sets the two pins as Outputs
   pinMode(extEnable, OUTPUT);
@@ -180,28 +148,45 @@ void setup()
   // Filament sensor setup (NC - Normally Closed, INPUT_PULLUP)
   pinMode(FILAMENT_SENSOR_PIN, INPUT_PULLUP);
 
-  // No button setup needed for serial communication
+  // Initialize extruder motor as DISABLED (HIGH = disabled)
+  digitalWrite(extEnable, HIGH); // Ensure extruder motor starts disabled
 
   // lock the selector by energizing it - keep locked 100% of time
   digitalWrite(selEnable, LOW); // Always locked
 
-  // make sure filament isn't blocked by gillotine
-  connectGillotine();
-  cutFilament();
-  disconnectGillotine();
+  // Auto-home on startup to establish known position
+  Serial.println("Homing...");
+  homeSelector();
+  Serial.println("Homing concluido");
 
-  prevCommand = 0;
+  // Load saved extruder from EEPROM and position to it
+  lastExtruder = loadSavedExtruder();
+  if(lastExtruder >= 0 && lastExtruder <= 2) {  // Only T0, T1, T2 available
 
+    // Move to the saved extruder position
+    currentExtruder = lastExtruder;
+    gotoExtruder(0, currentExtruder);  // From home position (0) to saved position
 
-  // if (digitalRead(FILAMENT_SENSOR_PIN) == HIGH) { // Sensor triggered (filament detected)
-  //   Serial.println("Sensor de filamento detectado!");
-  // }else{
-  //   Serial.println("Sensor de filamento nao detectado!");
-  // }
+    // Go to idle position for the active tool
+    moveToIdle();
+
+    Serial.print("T");
+    Serial.print(lastExtruder);
+    Serial.println(" carregado e em idle");
+  } else {
+    Serial.println("Permanecendo em T0");
+    currentExtruder = 0;
+    lastExtruder = 0;
+    saveCurrentExtruder(currentExtruder);
+  }
+
+  Serial.println("Commands:");
+  Serial.println("T0, T1, T2, HOME, IDLE");
+  Serial.println("LOAD <mm> (Load apos o sensor)");
+  Serial.println("UNLOAD <mm> (Unload)");
+  Serial.println();
 
 }
-
-int lastLoop = 0;
 
 void loop()
 {
@@ -214,8 +199,6 @@ void loop()
       if (serialBuffer.length() > 0)
       {
         commandReceived = true;
-        idleCount = 0;
-        logoActive = false;
         break;
       }
     }
@@ -228,16 +211,13 @@ void loop()
   // Process received command
   if (commandReceived)
   {
-    Serial.print("Comando recebido: ");
+    Serial.print("Comando: ");
     Serial.println(serialBuffer);
 
     processSerialCommand(serialBuffer);
     serialBuffer = "";
     commandReceived = false;
   }
-
-  // updates IO block
-  updateIOBlock();
 
   // small delay to prevent overwhelming the processor
   delay(10);
@@ -249,7 +229,6 @@ void processSerialCommand(String command)
   command.trim(); // Remove any whitespace
   command.toUpperCase(); // Convert to uppercase for case-insensitive comparison
 
-  long commandCode = 0;
   bool isLoadUnloadCommand = false;
   int toolNumber = -1;
   bool isLoad = false;
@@ -272,13 +251,13 @@ void processSerialCommand(String command)
     distance_mm = distanceStr.toFloat();
 
     if (distance_mm <= 0) {
-      Serial.println("ERRO: Distancia invalida");
+      Serial.println("Invalid distance");
       return;
     }
 
     // Check if a tool is currently selected
     if (currentExtruder < 0) {
-      Serial.println("ERRO: Nenhum tool selecionado. Use T0, T1, T2 ou T3 primeiro");
+      Serial.println("No tool selected. Use T0, T1, T2 or T3 first");
       return;
     }
 
@@ -300,10 +279,6 @@ void processSerialCommand(String command)
     selectTool(2);
     return;
   }
-  else if (command == "T3") {
-    selectTool(3);
-    return;
-  }
   else if (command == "HOME") {
     homeSelector();
     Serial.println("Selector homed");
@@ -313,27 +288,8 @@ void processSerialCommand(String command)
   else if (command == "IDLE") {
     moveToIdle();
     return;
-  }
-  else if (command == "CUT") {
-    cutFilamentOnly();
-    return;
-  }
-  else if (command == "STATUS") {
-    sendStatus();
-    return;
-  }
-  else if (command == "CLEAR_EEPROM") {
-    saveCurrentExtruder(-1);
-    lastExtruder = -1;
-    Serial.println("EEPROM cleared");
-    return;
-  }
-  else {
+  }else {
     Serial.println("ERRO: Comando desconhecido");
-    Serial.println("Comandos validos:");
-    Serial.println("T0, T1, T2, T3 (selecao de tool), HOME, IDLE, CUT, STATUS, CLEAR_EEPROM");
-    Serial.println("LOAD <distancia> (carrega no tool atual)");
-    Serial.println("UNLOAD <distancia> (descarrega do tool atual)");
     return;
   }
 }
@@ -363,30 +319,37 @@ void selectTool(int toolNumber)
 // Move selector to idle position (same as original code after tool change)
 void moveToIdle()
 {
-  Serial.println("Movendo para posicao IDLE");
 
-  // Move to idle position (like original code: currentExtruder==3?2:currentExtruder+1)
-  int idlePos = (currentExtruder == 3) ? 2 : (currentExtruder + 1);
-  gotoExtruder(currentExtruder, idlePos);
+  // Calculate idle position based on active tool (lastExtruder)
+  int idlePos;
+  if (lastExtruder == 0) {
+    idlePos = 2;  // T0 -> idle at T2
+  } else if (lastExtruder == 1) {
+    idlePos = 3;  // T1 -> idle at T3
+  } else if (lastExtruder == 2) {
+    idlePos = 0;  // T2 -> idle at T0
+  } else if (lastExtruder == 3) {
+    idlePos = 1;  // T3 -> idle at T1
+  } else {
+    idlePos = 2;  // Default fallback to T2
+  }
 
-  // Update currentExtruder to idle position for tracking
-  currentExtruder = idlePos;
-  lastExtruder = idlePos;
+  // Only move if not already at the correct idle position
+  if (currentExtruder != idlePos) {
+    gotoExtruder(currentExtruder, idlePos);
 
-  // Save to EEPROM
-  saveCurrentExtruder(currentExtruder);
+    // Update currentExtruder to idle position for tracking
+    // NOTE: We keep lastExtruder as the active tool, currentExtruder tracks physical position
+    currentExtruder = idlePos;
+    // lastExtruder stays as the active tool (not updated to idle position)
 
-  Serial.println("Posicao IDLE alcançada");
-}
+    // Save current position to EEPROM (physical position for tracking)
+    saveCurrentExtruder(currentExtruder);
 
-// Cut filament only (without full unload/load sequence)
-void cutFilamentOnly()
-{
-  Serial.println("Cortando filamento...");
-  connectGillotine();
-  cutFilament();
-  disconnectGillotine();
-  Serial.println("Filamento cortado");
+    Serial.println("Posicao IDLE alcançada");
+  }
+
+  
 }
 
 // Load filament until sensor is triggered, then continue with specified distance
@@ -394,6 +357,8 @@ long loadUntilSensor(bool direction, float additionalDistance_mm)
 {
   Serial.println("Carregando filamento ate o sensor...");
 
+  // Ensure motor is disabled before enabling (safety check)
+  digitalWrite(extEnable, HIGH);
   digitalWrite(extEnable, LOW);  // lock the motor
   digitalWrite(extDir, direction); // Set direction
 
@@ -402,7 +367,7 @@ long loadUntilSensor(bool direction, float additionalDistance_mm)
   bool sensorTriggered = false;
 
   // Move slowly until sensor is triggered (NC sensor goes HIGH when filament blocks it)
-  const int sensorSpeed = speedDelay/3 ; // Slower speed for sensor detection
+  const int sensorSpeed = speedDelay/5 ; // Slower speed for sensor detection
 
   while (stepsToSensor < maxSteps && !sensorTriggered) {
     // Check sensor state (NC = HIGH when filament is present)
@@ -506,229 +471,12 @@ void executeLoadUnload(int toolNumber, bool isLoad, float distance_mm)
   Serial.println("Operacao concluida");
 }
 
-// Send current status to Klipper
-void sendStatus()
-{
-  Serial.println("STATUS:");
-  Serial.print("Current Tool: ");
-  if (currentExtruder >= 0) {
-    Serial.println("T" + String(currentExtruder));
-  } else {
-    Serial.println("None");
-  }
-
-  Serial.print("Last Tool: ");
-  if (lastExtruder >= 0) {
-    Serial.println("T" + String(lastExtruder));
-  } else {
-    Serial.println("None");
-  }
-
-  Serial.print("Filament Sensor (A3): ");
-  int sensorState = digitalRead(FILAMENT_SENSOR_PIN);
-  Serial.println(sensorState == HIGH ? "TRIGGERED (Filament Present)" : "NOT TRIGGERED (No Filament)");
-
-  Serial.println("Available Commands:");
-  Serial.println("T0, T1, T2, T3 (tool selection), HOME, IDLE, CUT, STATUS, CLEAR_EEPROM");
-  Serial.println("LOAD <distance_mm> (load on current tool - uses sensor)");
-  Serial.println("UNLOAD <distance_mm> (unload from current tool)");
-}
-
-// CNC Shield doesn't have filament sensors - simulate all as loaded
-void updateIOBlock()
-{
-    // CNC Shield doesn't have individual filament sensors
-    // Assume all filaments are loaded for compatibility
-    T0Loaded = true;
-    T1Loaded = true;
-    T2Loaded = true;
-    T3Loaded = true;
-}
-
-// Send command confirmation via serial
-void displayCommand(long commandCount)
-{
-  String commandName = "";
-
-  switch(commandCount)
-  {
-  case 2:
-    commandName = "Switch to T0";
-    break;
-  case 3:
-    commandName = "Switch to T1";
-    break;
-  case 4:
-    commandName = "Switch to T2";
-    break;
-  case 5:
-    commandName = "Switch to T3";
-    break;
-  case 6:
-    commandName = "Home/Load T0";
-    break;
-  case 7:
-    commandName = "Unload/Home";
-    break;
-  case 8:
-    commandName = "Home";
-    break;
-  case 9:
-    commandName = "Next Filament";
-    break;
-  case 10:
-    commandName = "Random Filament";
-    break;
-  default:
-    commandName = "No Command";
-    break;
-  }
-
-  Serial.println("Executando: " + commandName);
-}
-
-// execute the pulse count command
-void processCommand(long commandCount)
-{
-
-  // select case for commands
-  switch (commandCount)
-  {
-  case 2: // unload current, switch to #0, load
-    Serial.println("T0 Selected");
-    currentExtruder = 0;
-    processMoves();
-    Serial.println("Idle - T0");
-    break;
-
-  case 3: // unload current, switch to #1, load
-    Serial.println("T1 Selected");
-    currentExtruder = 1;
-    processMoves();
-    Serial.println("Idle - T1");
-    break;
-
-  case 4: // unload current, switch to #3, load
-    Serial.println("T2 Selected");
-    currentExtruder = 2;
-    processMoves();
-    Serial.println("Idle - T2");
-    break;
-
-  case 5: // unload current, switch to #4, load
-    Serial.println("T3 Selected");
-    currentExtruder = 3;
-    processMoves();
-    Serial.println("Idle - T3");
-    break;
-
-  case 6: //home and reload #1
-    Serial.println("Homing and loading T0...");
-    homeSelector();
-    gotoExtruder(0, 0);
-    if(loaderMode>0)rotateExtruder(clockwise, loadDistance);
-    if(loaderMode>0)gotoExtruder(0, 1);
-    currentExtruder = 0;
-    lastExtruder = 0;
-    Serial.println("Ready - T0 loaded");
-    break;
-
-  case 7: // unload current and rehome selector
-    Serial.println("Cutting filament...");
-    connectGillotine();
-    cutFilament();
-    Serial.println("Unloading filament...");
-    if(loaderMode>0)gotoExtruder((lastExtruder==3?2:lastExtruder+1),lastExtruder);
-    if(lastExtruder<2)
-    {
-      if(loaderMode>0)rotateExtruder(counterclockwise, unloadDistance);
-    }
-    else
-    {
-      if(loaderMode>0)rotateExtruder(clockwise, unloadDistance);
-    }
-    disconnectGillotine();
-    Serial.println("Unloaded and homed");
-    break;
-
-  case 8:
-    Serial.println("Homing...");
-    homeSelector();
-    Serial.println("Idle");
-    break;
-
-  case 9: // move to next available filament
-    Serial.println("Cutting...");
-    connectGillotine();
-    cutFilament();
-    Serial.println("Next Tool");
-    currentExtruder++;
-    if(currentExtruder==4)currentExtruder=0;
-    processMoves();
-    Serial.println("Idle");
-    break;
-
-  case 10: // move to a random filament
-    Serial.println("Cutting...");
-    connectGillotine();
-    cutFilament();
-    Serial.println("Random Tool");
-
-    // select a random number
-    randomNumber = random(0,2) + 1;
-
-    // skip ahead that many tools
-    for(long i=0; i<randomNumber; i++)
-    {
-      currentExtruder++;
-      if(currentExtruder==4)currentExtruder=0;
-    }
-    processMoves();
-    Serial.println("Idle");
-    break;
-
-  case 11: // clear EEPROM (special command for testing)
-    Serial.println("Clearing EEPROM...");
-    saveCurrentExtruder(-1);
-    lastExtruder = -1;
-    Serial.println("EEPROM Cleared");
-    delay(1000);
-    Serial.println("Idle");
-    break;
-
-  default:
-    Serial.println("Clear");
-    delay(200);
-
-    Serial.println("Idle");
-    break;
-  }
-}
-
-// Serial output instead of OLED display
-void displayText(int offset, String str)
-{
-  Serial.println(str);
-}
-
-// Debug function to test trigger input (removido para não poluir)
-
 // real work is here
 void processMoves()
 {
-
   // make sure we have a real extruder selected
   if(lastExtruder>-1)
   {
-
-    // if so, we need to cut the filament
-    Serial.println("Cutting filament...");
-    connectGillotine();
-    cutFilament();
-
-    // Unload the current filament
-    Serial.println("Unloading current filament...");
-
     // roll over to first if on last
     if( loaderMode>0 ) gotoExtruder( ( lastExtruder==3 ? 2 : (lastExtruder+1)), lastExtruder);
 
@@ -746,7 +494,6 @@ void processMoves()
   {
     lastExtruder = 0;
   }
-  disconnectGillotine();
 
   // tell it to actually execute that command now
   gotoExtruder(lastExtruder, currentExtruder);
@@ -808,6 +555,8 @@ void rotateExtruder(bool direction, long moveDistance)
 {
   // note to bill:  make this acecelerate so it's very fast!!!
 
+  // Ensure motor is disabled before enabling (safety check)
+  digitalWrite(extEnable, HIGH);
   digitalWrite(extEnable, LOW);  // lock the motor
   digitalWrite(extDir, direction); // Enables the motor to move in a particular direction
 
@@ -896,56 +645,6 @@ void rotateSelector(bool direction, int moveDistance)
     }
 }
 
-// this cycles the servo between two positions
-void cutFilament() {
-  digitalWrite(selEnable, LOW); // lock selector for servo power (stays locked)
-  if(reverseServo==false)
-  {
-    openGillotine();
-    closeGillotine();
-  }
-  else
-  {
-    closeGillotine();
-    openGillotine();
-  }
-  // Keep selector locked 100% of time - no digitalWrite(selEnable, HIGH);
-}
-
-// enable the servo
-void connectGillotine()
-{
-  filamentCutter.attach(SERVO_PIN);
-}
-
-// disable the servo - so it doesn't chatter when not in use
-void disconnectGillotine()
-{
-  filamentCutter.detach();
-}
-
-// cycle servo from 135 and 180
-void openGillotine()
-{
-    for (int pos = 135; pos <= 180; pos += 1) { // goes from 0 degrees to 180 degrees
-    // in steps of 1 degree
-    filamentCutter.write(pos);              // tell servo to go to position in variable 'pos'
-    delayMicroseconds(25000);                       // waits 15ms for the servo to reach the position
-  }
-  //filamentCutter.write(3.5);       // tell servo to go to position in variable 'pos'
-  delay(50);                       // waits 15ms for the servo to reach the position
-}
-
-// reverse cycle servo from 180 back to 135
-void closeGillotine()
-{
-  for (int pos = 180; pos >= 135; pos -= 1) { // goes from 180 degrees to 0 degrees
-    filamentCutter.write(pos);              // tell servo to go to position in variable 'pos'
-    delayMicroseconds(25000);                       // waits 15ms for the servo to reach the position
-  }
-  delay(50);                       // waits 15ms for the servo to reach the position
-}
-
 // rotate the selector clockwise too far from 4, so it'll grind on the bump stop
 void homeSelector()
 {
@@ -961,7 +660,4 @@ void homeSelector()
 
   // Save current position to EEPROM (T0 = position 0)
   saveCurrentExtruder(currentExtruder);
-
 }
-
-// Removed vibrateMotor() - no longer needed for serial interface
