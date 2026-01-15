@@ -77,7 +77,7 @@ const int counterclockwise = HIGH;
 const int clockwise = !counterclockwise;
 
 const int stepsPerRev = 200;
-const int microSteps = 8;
+const int microSteps = 16;
 const int speedDelay = 170;     // Original: 170, Faster: 85, Fastest: 40
 
 const int defaultBackoff = 10;
