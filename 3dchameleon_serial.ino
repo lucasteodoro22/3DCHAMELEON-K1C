@@ -41,6 +41,8 @@ UNLOAD <distance> - Unload filament from current tool position with specified di
 System Commands:
 HOME - Home selector only
 IDLE - Move selector to idle position
+COLETOR_ON - Abre coletor de purga (gira por 1 segundo)
+COLETOR_OFF - Fecha coletor de purga (gira por 1 segundo)
 
 
 Posições Idle 
@@ -88,6 +90,13 @@ const int defaultBackoff = 10;
 Servo filamentCutter;  // create servo object to control a servo
 int cutterPos = 0;    // variable to store the servo position
 bool reverseServo = true;
+
+// Coletor de purga (360 graus servo)
+const int COLETOR_STOP = 1500;           // Servo parado
+const int COLETOR_OPEN_SPEED = 1300;     // Velocidade para abrir coletor (sentido horario)
+const int COLETOR_CLOSE_SPEED = 1700;    // Velocidade para fechar coletor (sentido anti-horario)
+const int COLETOR_OPEN_TIME = 300;       // Tempo para abrir coletor em ms (0.5 segundo)
+const int COLETOR_CLOSE_TIME = 180;      // Tempo para fechar coletor em ms (0.5 segundo)
 
 int currentExtruder = -1;
 int nextExtruder = 0;
@@ -148,6 +157,10 @@ void setup()
   // Filament sensor setup (NC - Normally Closed, INPUT_PULLUP)
   pinMode(FILAMENT_SENSOR_PIN, INPUT_PULLUP);
 
+  // Initialize servo for filament cutter/coletor de purga
+  filamentCutter.attach(SERVO_PIN);
+  filamentCutter.writeMicroseconds(COLETOR_STOP); // Start stopped
+
   // Initialize extruder motor as DISABLED (HIGH = disabled)
   digitalWrite(extEnable, HIGH); // Ensure extruder motor starts disabled
 
@@ -184,6 +197,8 @@ void setup()
   Serial.println("T0, T1, T2, HOME, IDLE");
   Serial.println("LOAD <mm> (Load apos o sensor)");
   Serial.println("UNLOAD <mm> (Unload)");
+  Serial.println("COLETOR_ON (Abre coletor de purga)");
+  Serial.println("COLETOR_OFF (Fecha coletor de purga)");
   Serial.println();
 
 }
@@ -221,6 +236,31 @@ void loop()
 
   // small delay to prevent overwhelming the processor
   delay(10);
+}
+
+// Funções do coletor de purga
+void coletorOn() {
+  Serial.println("Abrindo coletor de purga...");
+  filamentCutter.writeMicroseconds(COLETOR_OPEN_SPEED);
+
+  // Gira por tempo definido para abrir
+  delay(COLETOR_OPEN_TIME);
+
+  // Para o servo
+  filamentCutter.writeMicroseconds(COLETOR_STOP);
+  Serial.println("Coletor aberto");
+}
+
+void coletorOff() {
+  Serial.println("Fechando coletor de purga...");
+  filamentCutter.writeMicroseconds(COLETOR_CLOSE_SPEED);
+
+  // Gira por tempo definido para fechar
+  delay(COLETOR_CLOSE_TIME);
+
+  // Para o servo
+  filamentCutter.writeMicroseconds(COLETOR_STOP);
+  Serial.println("Coletor fechado");
 }
 
 // Process serial commands from Klipper
@@ -288,7 +328,16 @@ void processSerialCommand(String command)
   else if (command == "IDLE") {
     moveToIdle();
     return;
-  }else {
+  }
+  else if (command == "COLETOR_ON" || command == "coletor_on") {
+    coletorOn();
+    return;
+  }
+  else if (command == "COLETOR_OFF" || command == "coletor_off") {
+    coletorOff();
+    return;
+  }
+  else {
     Serial.println("ERRO: Comando desconhecido");
     return;
   }
