@@ -116,6 +116,11 @@ unsigned long lastBufferCheck = 0;
 bool lastBufferEmptyState = false;  // Estado anterior do sensor vazio
 bool lastBufferFullState = false;   // Estado anterior do sensor cheio
 
+// Idle timeout baseado em inatividade do buffer (1 minuto = 60000ms)
+#define IDLE_TIMEOUT 120000  // 1 minuto sem uso do buffer = impressora parada
+unsigned long lastBufferActivity = 0;  // Última vez que o buffer foi usado
+bool isInIdleMode = false;  // Flag para saber se está em modo idle
+
 
 int loaderMode = 1;  //(0= direct drive, 1=loader/unloader - automatic mode)
 
@@ -177,6 +182,10 @@ void setup()
   lastBufferEmptyState = (digitalRead(BUFFER_EMPTY_PIN) == HIGH);
   lastBufferFullState = (digitalRead(BUFFER_FULL_PIN) == HIGH);
 
+  // Initialize buffer activity timer and idle mode
+  lastBufferActivity = millis();
+  isInIdleMode = false;
+
   // Initialize servo for filament cutter/coletor de purga
   filamentCutter.attach(SERVO_PIN);
   filamentCutter.writeMicroseconds(COLETOR_STOP); // Start stopped
@@ -200,9 +209,7 @@ void setup()
     currentExtruder = lastExtruder;
     gotoExtruder(0, currentExtruder);  // From home position (0) to saved position
 
-    // Go to idle position for the active tool
-    moveToIdle();
-
+    // Mantém o seletor na posição da ferramenta ativa
     Serial.print("T");
     Serial.print(lastExtruder);
     Serial.println(" loaded");
@@ -243,6 +250,11 @@ void loop()
     Serial.print("Comando: ");
     Serial.println(serialBuffer);
 
+    // RESETAR TIMER DE INATIVIDADE - houve atividade do usuário/Klipper
+    lastBufferActivity = millis();
+    isInIdleMode = false;  // SAIR DO MODO IDLE
+    Serial.println("Atividade detectada (comando serial) - saindo do idle");
+
     processSerialCommand(serialBuffer);
     serialBuffer = "";
     commandReceived = false;
@@ -257,6 +269,9 @@ void loop()
     maintainBuffer();
     lastBufferCheck = currentTime;
   }
+
+  // ========== MONITORAMENTO DE IDLE (sempre ativo) ==========
+  checkIdleTimeout(currentTime);
 
   // small delay to prevent overwhelming the processor
   delay(10);
@@ -300,7 +315,27 @@ void monitorBufferStateChanges() {
     Serial.print(lastBufferEmptyState ? "ON" : "OFF");
     Serial.print("->");
     Serial.println(currentEmptyState ? "ON" : "OFF");
+
+    // Qualquer mudança no buffer = atividade, resetar timer de inatividade
+    lastBufferActivity = millis();
+    isInIdleMode = false;  // SAIR DO MODO IDLE
+    Serial.println("Atividade do buffer detectada - saindo do idle");
+
     lastBufferEmptyState = currentEmptyState;
+  }
+
+  // Verifica mudança no sensor de buffer cheio
+  if (currentFullState != lastBufferFullState) {
+    Serial.print("Full: ");
+    Serial.print(lastBufferFullState ? "ON" : "OFF");
+    Serial.print("->");
+    Serial.println(currentFullState ? "ON" : "OFF");
+
+    // Mudança no sensor cheio também é atividade
+    lastBufferActivity = millis();
+    isInIdleMode = false;  // SAIR DO MODO IDLE
+
+    lastBufferFullState = currentFullState;
   }
 
   // Verifica mudança no sensor de buffer cheio
@@ -319,24 +354,94 @@ void maintainBuffer() {
   if (!filamentInHotend) return;  // Sem filamento no hotend, não faz nada
 
   bool bufferEmpty = (digitalRead(BUFFER_EMPTY_PIN) == HIGH);
+  unsigned long currentTime = millis();
 
-  // Se buffer está vazio E temos filamento no hotend, recarrega
+  // Se buffer está vazio, alimentar imediatamente (atividade normal de impressão)
   if (bufferEmpty) {
-    Serial.println("Buffer vazio - Recarregando...");
+    Serial.println("Buffer vazio - recarregando imediatamente...");
 
-    // Seleciona ferramenta atual (caso não esteja selecionada)
+    // Resetar timer de inatividade (houve atividade)
+    lastBufferActivity = currentTime;
+
+    // VERIFICAÇÃO CRÍTICA: Seletor deve estar na posição da ferramenta ativa
     if (currentExtruder != lastExtruder) {
+      Serial.print("Seletor fora de posição! Movendo T");
+      Serial.print(lastExtruder);
+      Serial.println("...");
       gotoExtruder(currentExtruder >= 0 ? currentExtruder : 0, lastExtruder);
       currentExtruder = lastExtruder;
+      Serial.println("Seletor reposicionado");
     }
 
-    // Alimenta filamento até buffer ficar cheio
-    feedBuffer();
+    // Alimenta o buffer se o seletor estiver na posição correta
+    if (currentExtruder == lastExtruder) {
+      feedBuffer();
+      Serial.println("Buffer recarregado");
+    } else {
+      Serial.println("ERRO: Seletor não está na posição correta - abortando recarga!");
+    }
+  }
 
-    // Após recarregar o buffer, vai para posição idle
-    moveToIdle();
+  // Verificar idle timeout baseado em inatividade
+  checkIdleTimeout(currentTime);
+}
 
-    Serial.println("Buffer recarregado");
+// Verifica se deve ir para idle baseado em inatividade geral
+void checkIdleTimeout(unsigned long currentTime) {
+  // Se já está em modo idle, não verificar timeout
+  if (isInIdleMode) {
+    return;
+  }
+
+  // Verificar se passou o timeout de inatividade DESDE O STARTUP
+  if ((currentTime - lastBufferActivity) >= IDLE_TIMEOUT) {
+    Serial.println("Inatividade geral detectada - indo para idle...");
+
+    // Verificar se já não está em idle
+    int idlePos;
+    if (lastExtruder == 0) idlePos = 2;
+    else if (lastExtruder == 1) idlePos = 3;
+    else if (lastExtruder == 2) idlePos = 0;
+    else idlePos = 2; // Default
+
+    // ANTES DE IR PARA IDLE: Verificar e preparar buffer se possível
+    bool filamentInHotend = (digitalRead(FILAMENT_SENSOR_PIN) == HIGH);
+    bool bufferFull = (digitalRead(BUFFER_FULL_PIN) == HIGH);
+
+    if (filamentInHotend && !bufferFull) {
+      Serial.println("Buffer não cheio - preparando antes de ir para idle...");
+
+      // Seletor deve estar na posição da ferramenta ativa para alimentar buffer
+      if (currentExtruder != lastExtruder) {
+        Serial.print("Seletor fora de posição! Movendo T");
+        Serial.print(lastExtruder);
+        Serial.println("...");
+        gotoExtruder(currentExtruder >= 0 ? currentExtruder : 0, lastExtruder);
+        currentExtruder = lastExtruder;
+        Serial.println("Seletor reposicionado");
+      }
+
+      // Só alimentar se estiver na posição correta
+      if (currentExtruder == lastExtruder) {
+        Serial.println("Alimentando buffer...");
+        feedBuffer();
+        Serial.println("Buffer preparado");
+      }
+    } else if (filamentInHotend && bufferFull) {
+      Serial.println("Buffer já está cheio - ok para idle");
+    } else if (!filamentInHotend) {
+      Serial.println("Sem filamento no hotend - indo para idle sem preparar buffer");
+    }
+
+    // IR PARA IDLE
+    if (currentExtruder != idlePos) {
+      Serial.println("Movendo seletor para idle...");
+      moveToIdle();
+    }
+    Serial.println("Seletor em idle (motor não aquece)");
+
+    // ATIVAR MODO IDLE - para não ficar repetindo
+    isInIdleMode = true;
   }
 }
 
