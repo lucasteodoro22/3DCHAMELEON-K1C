@@ -78,12 +78,20 @@ T3 → idle em T1
 // Filament sensor pin (NC - Normally Closed)
 #define FILAMENT_SENSOR_PIN A3
 
+// Buffer system pins (NC - Normally Closed)
+#define BUFFER_EMPTY_PIN A1      // ABORT - Microswitch 1 - Buffer vazio
+#define BUFFER_FULL_PIN A0       // HOLD - Microswitch 2 - Buffer cheio
+
+// Buffer system constants
+#define BUFFER_CHECK_INTERVAL 200   // Verificar buffer a cada 0.2s (resposta mais rápida)
+
 const int counterclockwise = HIGH;
 const int clockwise = !counterclockwise;
 
 const int stepsPerRev = 200;
 const int microSteps = 16;
 const int speedDelay = 170;     // Original: 170, Faster: 85, Fastest: 40
+const int selectorSpeedDelay = 60; // Velocidade específica para o seletor (3x mais rápido)
 
 const int defaultBackoff = 10;
 
@@ -102,6 +110,11 @@ int currentExtruder = -1;
 int nextExtruder = 0;
 int lastExtruder = -1;
 int tempExtruder = -1;
+
+// Buffer system variables
+unsigned long lastBufferCheck = 0;
+bool lastBufferEmptyState = false;  // Estado anterior do sensor vazio
+bool lastBufferFullState = false;   // Estado anterior do sensor cheio
 
 
 int loaderMode = 1;  //(0= direct drive, 1=loader/unloader - automatic mode)
@@ -142,8 +155,7 @@ void setup()
   // Serial output instead of OLED
   Serial.begin(9600);
 
-  Serial.println("3DChameleon Mk4 - Arduino Uno CNC Shield");
-  Serial.println("Serial Interface Ready!");
+  Serial.println("3DChameleon Mk4 Ready");
 
   // Sets the two pins as Outputs
   pinMode(extEnable, OUTPUT);
@@ -156,6 +168,14 @@ void setup()
 
   // Filament sensor setup (NC - Normally Closed, INPUT_PULLUP)
   pinMode(FILAMENT_SENSOR_PIN, INPUT_PULLUP);
+
+  // Buffer sensors setup (NC - Normally Closed, INPUT_PULLUP)
+  pinMode(BUFFER_EMPTY_PIN, INPUT_PULLUP);  // A0 (HOLD)
+  pinMode(BUFFER_FULL_PIN, INPUT_PULLUP);   // A1 (ABORT)
+
+  // Initialize buffer sensor states
+  lastBufferEmptyState = (digitalRead(BUFFER_EMPTY_PIN) == HIGH);
+  lastBufferFullState = (digitalRead(BUFFER_FULL_PIN) == HIGH);
 
   // Initialize servo for filament cutter/coletor de purga
   filamentCutter.attach(SERVO_PIN);
@@ -170,7 +190,7 @@ void setup()
   // Auto-home on startup to establish known position
   Serial.println("Homing...");
   homeSelector();
-  Serial.println("Homing concluido");
+  Serial.println("Home OK");
 
   // Load saved extruder from EEPROM and position to it
   lastExtruder = loadSavedExtruder();
@@ -185,21 +205,15 @@ void setup()
 
     Serial.print("T");
     Serial.print(lastExtruder);
-    Serial.println(" carregado e em idle");
+    Serial.println(" loaded");
   } else {
-    Serial.println("Permanecendo em T0");
+    Serial.println("Stay T0");
     currentExtruder = 0;
     lastExtruder = 0;
     saveCurrentExtruder(currentExtruder);
   }
 
-  Serial.println("Commands:");
-  Serial.println("T0, T1, T2, HOME, IDLE");
-  Serial.println("LOAD <mm> (Load apos o sensor)");
-  Serial.println("UNLOAD <mm> (Unload)");
-  Serial.println("COLETOR_ON (Abre coletor de purga)");
-  Serial.println("COLETOR_OFF (Fecha coletor de purga)");
-  Serial.println();
+  Serial.println("Cmd: T0-T2, HOME, IDLE, LOAD/UNLOAD <mm>, COLETOR_ON/OFF, TEST_SPEED");
 
 }
 
@@ -234,13 +248,23 @@ void loop()
     commandReceived = false;
   }
 
+  // ========== MONITORAMENTO DE MUDANÇAS DO BUFFER ==========
+  monitorBufferStateChanges();
+
+  // ========== MONITORAMENTO AUTOMÁTICO DO BUFFER ==========
+  unsigned long currentTime = millis();
+  if (currentTime - lastBufferCheck >= BUFFER_CHECK_INTERVAL) {
+    maintainBuffer();
+    lastBufferCheck = currentTime;
+  }
+
   // small delay to prevent overwhelming the processor
   delay(10);
 }
 
 // Funções do coletor de purga
 void coletorOn() {
-  Serial.println("Abrindo coletor de purga...");
+  Serial.println("Coletor abrindo...");
   filamentCutter.writeMicroseconds(COLETOR_OPEN_SPEED);
 
   // Gira por tempo definido para abrir
@@ -252,7 +276,7 @@ void coletorOn() {
 }
 
 void coletorOff() {
-  Serial.println("Fechando coletor de purga...");
+  Serial.println("Coletor fechando...");
   filamentCutter.writeMicroseconds(COLETOR_CLOSE_SPEED);
 
   // Gira por tempo definido para fechar
@@ -261,6 +285,105 @@ void coletorOff() {
   // Para o servo
   filamentCutter.writeMicroseconds(COLETOR_STOP);
   Serial.println("Coletor fechado");
+}
+
+// ========== SISTEMA DE BUFFER DE FILAMENTO ==========
+
+// Monitora mudanças de estado dos sensores do buffer
+void monitorBufferStateChanges() {
+  bool currentEmptyState = (digitalRead(BUFFER_EMPTY_PIN) == HIGH);
+  bool currentFullState = (digitalRead(BUFFER_FULL_PIN) == HIGH);
+
+  // Verifica mudança no sensor de buffer vazio
+  if (currentEmptyState != lastBufferEmptyState) {
+    Serial.print("Empty: ");
+    Serial.print(lastBufferEmptyState ? "ON" : "OFF");
+    Serial.print("->");
+    Serial.println(currentEmptyState ? "ON" : "OFF");
+    lastBufferEmptyState = currentEmptyState;
+  }
+
+  // Verifica mudança no sensor de buffer cheio
+  if (currentFullState != lastBufferFullState) {
+    Serial.print("Full: ");
+    Serial.print(lastBufferFullState ? "ON" : "OFF");
+    Serial.print("->");
+    Serial.println(currentFullState ? "ON" : "OFF");
+    lastBufferFullState = currentFullState;
+  }
+}
+
+// Mantém buffer carregado quando necessário (automático)
+void maintainBuffer() {
+  bool filamentInHotend = (digitalRead(FILAMENT_SENSOR_PIN) == HIGH);
+  if (!filamentInHotend) return;  // Sem filamento no hotend, não faz nada
+
+  bool bufferEmpty = (digitalRead(BUFFER_EMPTY_PIN) == HIGH);
+
+  // Se buffer está vazio E temos filamento no hotend, recarrega
+  if (bufferEmpty) {
+    Serial.println("Buffer vazio - Recarregando...");
+
+    // Seleciona ferramenta atual (caso não esteja selecionada)
+    if (currentExtruder != lastExtruder) {
+      gotoExtruder(currentExtruder >= 0 ? currentExtruder : 0, lastExtruder);
+      currentExtruder = lastExtruder;
+    }
+
+    // Alimenta filamento até buffer ficar cheio
+    feedBuffer();
+
+    // Após recarregar o buffer, vai para posição idle
+    moveToIdle();
+
+    Serial.println("Buffer recarregado");
+  }
+}
+
+// Alimenta filamento para o buffer até sensor full
+void feedBuffer() {
+  // Direção baseada na ferramenta atual (mesma lógica do load)
+  bool direction = (lastExtruder < 2) ? clockwise : counterclockwise;
+
+  // Habilita motor do extruder
+  digitalWrite(extEnable, LOW);
+  digitalWrite(extDir, direction);
+
+  long stepsFed = 0;
+  long maxSteps = (long)(300.0 * STEPS_PER_MM); // Máximo 300mm de segurança
+  bool bufferFull = false;
+
+  // Velocidade lenta para controle preciso
+  const int feedSpeed = speedDelay;
+
+  while (stepsFed < maxSteps && !bufferFull) {
+    // Verifica se buffer está cheio (segundo microswitch)
+    if (digitalRead(BUFFER_FULL_PIN) == HIGH) {
+      bufferFull = true;
+      Serial.println("Buffer cheio - Parando");
+      break;
+    }
+
+    // Move um passo
+    digitalWrite(extStep, HIGH);
+    delayMicroseconds(feedSpeed);
+    digitalWrite(extStep, LOW);
+    delayMicroseconds(feedSpeed);
+
+    stepsFed++;
+  }
+
+  // Desabilita motor
+  digitalWrite(extEnable, HIGH);
+
+  if (!bufferFull) {
+    Serial.println("ERRO: Buffer nao cheio!");
+  } else {
+    float distanceFed = (float)stepsFed / STEPS_PER_MM;
+    Serial.print("Buffer: ");
+    Serial.print(distanceFed);
+    Serial.println("mm");
+  }
 }
 
 // Process serial commands from Klipper
@@ -291,13 +414,13 @@ void processSerialCommand(String command)
     distance_mm = distanceStr.toFloat();
 
     if (distance_mm <= 0) {
-      Serial.println("Invalid distance");
+      Serial.println("Distancia invalida");
       return;
     }
 
     // Check if a tool is currently selected
     if (currentExtruder < 0) {
-      Serial.println("No tool selected. Use T0, T1, T2 or T3 first");
+      Serial.println("Selecione tool primeiro");
       return;
     }
 
@@ -337,8 +460,18 @@ void processSerialCommand(String command)
     coletorOff();
     return;
   }
+  else if (command == "TEST_SPEED") {
+    Serial.println("Testando velocidade do seletor...");
+    unsigned long startTime = millis();
+    gotoExtruder(0, 2); // T0 para T2
+    unsigned long endTime = millis();
+    Serial.print("Tempo: ");
+    Serial.print(endTime - startTime);
+    Serial.println("ms");
+    return;
+  }
   else {
-    Serial.println("ERRO: Comando desconhecido");
+    Serial.println("Cmd invalido");
     return;
   }
 }
@@ -346,7 +479,7 @@ void processSerialCommand(String command)
 // Tool selection - just move selector to position
 void selectTool(int toolNumber)
 {
-  Serial.print("Selecionando T");
+  Serial.print("Sel T");
   Serial.println(toolNumber);
 
   // Move selector to the tool position
@@ -360,9 +493,9 @@ void selectTool(int toolNumber)
   // Save to EEPROM
   saveCurrentExtruder(currentExtruder);
 
-  Serial.print("Tool T");
+  Serial.print("T");
   Serial.print(toolNumber);
-  Serial.println(" selecionado");
+  Serial.println(" OK");
 }
 
 // Move selector to idle position (same as original code after tool change)
@@ -395,7 +528,7 @@ void moveToIdle()
     // Save current position to EEPROM (physical position for tracking)
     saveCurrentExtruder(currentExtruder);
 
-    Serial.println("Posicao IDLE alcançada");
+    Serial.println("Idle OK");
   }
 
   
@@ -404,7 +537,7 @@ void moveToIdle()
 // Load filament until sensor is triggered, then continue with specified distance
 long loadUntilSensor(bool direction, float additionalDistance_mm)
 {
-  Serial.println("Carregando filamento ate o sensor...");
+  Serial.println("Loading to sensor...");
 
   // Ensure motor is disabled before enabling (safety check)
   digitalWrite(extEnable, HIGH);
@@ -422,7 +555,7 @@ long loadUntilSensor(bool direction, float additionalDistance_mm)
     // Check sensor state (NC = HIGH when filament is present)
     if (digitalRead(FILAMENT_SENSOR_PIN) == HIGH) { // Sensor triggered (filament detected)
       sensorTriggered = true;
-      Serial.println("Sensor de filamento detectado!");
+      Serial.println("Sensor OK!");
       break;
     }
 
@@ -441,14 +574,14 @@ long loadUntilSensor(bool direction, float additionalDistance_mm)
     return 0;
   }
 
-  Serial.print("Filamento posicionado no sensor. Movimentacao ate sensor: ");
+  Serial.print("To sensor: ");
   Serial.print((float)stepsToSensor / STEPS_PER_MM);
   Serial.println("mm");
 
   // Now continue with the specified additional distance
   if (additionalDistance_mm > 0) {
     long additionalSteps = (long)(additionalDistance_mm * STEPS_PER_MM);
-    Serial.print("Continuando com distancia adicional: ");
+    Serial.print("Extra: ");
     Serial.print(additionalDistance_mm);
     Serial.println("mm");
 
@@ -468,7 +601,7 @@ long loadUntilSensor(bool direction, float additionalDistance_mm)
   digitalWrite(extEnable, HIGH);
 
   long totalSteps = stepsToSensor + (long)(additionalDistance_mm * STEPS_PER_MM);
-  Serial.print("Movimento total concluido: ");
+  Serial.print("Total: ");
   Serial.print((float)totalSteps / STEPS_PER_MM);
   Serial.println("mm");
 
@@ -574,6 +707,10 @@ void processMoves()
 // this function simply moves from the currentCog to the targetCog is the best way
 void gotoExtruder(int currentCog, int targetCog)
 {
+  Serial.print("Movendo seletor T");
+  Serial.print(currentCog);
+  Serial.print("->T");
+  Serial.println(targetCog);
 
   int newCog = targetCog - currentCog;
 
@@ -597,6 +734,8 @@ void gotoExtruder(int currentCog, int targetCog)
       rotateSelector(newDirection, (stepsPerRev / 4) * microSteps);
     }
   }
+
+  Serial.println("Seletor movido");
 }
 
 // move the extruder motor in a specific direction for a specific distance (unless it's a "until button is not pressed")
@@ -678,25 +817,24 @@ void rotateExtruder(bool direction, long moveDistance)
 // similar to extruder, but only stepping 50 (of 200) at a time
 void rotateSelector(bool direction, int moveDistance)
 {
-
-  // while we are at it... can we make this faster using the magic you invented above?
-
   digitalWrite(selEnable, LOW); // lock the selector
   digitalWrite(selDir, direction); // Enables the motor to move in a particular direction
 
     // Makes 50 pulses for making one full cycle rotation
+    // Usa velocidade específica do seletor (mais rápida)
     for (int x = 0; x < (moveDistance-1); x++)
     {
       digitalWrite(selStep, HIGH);
-      delayMicroseconds(speedDelay);
+      delayMicroseconds(selectorSpeedDelay);  // Velocidade otimizada para seletor
       digitalWrite(selStep, LOW);
-      delayMicroseconds(speedDelay);
+      delayMicroseconds(selectorSpeedDelay);
     }
 }
 
 // rotate the selector clockwise too far from 4, so it'll grind on the bump stop
 void homeSelector()
 {
+  Serial.println("Homing seletor...");
   // rotate counter clockwise to hard stop
   rotateSelector(clockwise, stepsPerRev * microSteps);
 
@@ -709,4 +847,5 @@ void homeSelector()
 
   // Save current position to EEPROM (T0 = position 0)
   saveCurrentExtruder(currentExtruder);
+  Serial.println("Home OK");
 }
