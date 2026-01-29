@@ -47,8 +47,11 @@ Este projeto utiliza e adapta os seguintes sistemas já prontos:
 #### 1. **Arduino Uno + CNC Shield v3** (`3dchameleon_serial.ino`)
 - **Eixo Z**: Motor da extrusora (alimentação de filamento)
 - **Eixo X**: Motor do seletor (seleção de ferramenta)
-- **Servo Pin 11**: Coletor de purga
-- **Sensores**: Filamento e buffer (microswitches NC)
+- **Servo Pin 11**: Coletor de purga (PURGA_COLETOR_PIN)
+- **Sensores de filamento por ferramenta** (NC): T0=D9 (X Endstop), T1=D10 (Y Endstop), T2=D13 (SpnDir)
+- **Sensor de filamento no hotend**: A3 (CoolEnd)
+- **Sensor de alimentação** (NO): T1=A2 (Resume) — monitora filamento pré-carregado
+- **Sensores de buffer** (NC): A0 (HOLD), A1 (ABORT)
 - **Comunicação**: Serial 9600 baud com Klipper
 
 #### 2. **Integração Klipper** (`3dchameleon_serial.cfg`)
@@ -87,17 +90,21 @@ Retorno à Posição Anterior
 - **CNC Shield v3** para Arduino Uno
 - **2x Drivers A4988 ou DRV8825** (para motores stepper)
 - **Servo 360°** (para coletor de purga)
-- **2x Microswitches NC** (sensores de buffer)
-- **1x Microswitch NC** (sensor de filamento, que fica na extrusora da impressora)
+- **2x Microswitches NC** (sensores de buffer: A0, A1)
+- **1x Microswitch NC** (sensor de filamento no hotend: A3)
+- **3x Microswitches NC** (sensores de filamento por ferramenta: T0=D9, T1=D10, T2=D13)
+- **1x Microswitch NO** (opcional, sensor de alimentação T1: A2)
 
 ### Motores
 - **Motor Stepper 1**: Seletor de ferramentas (NEMA 17)
 - **Motor Stepper 2**: Extrusora/buffer (NEMA 17)
 
 ### Sensores
-- **Sensor de Filamento**: Microswitch NC no hotend
-- **Buffer Empty**: Microswitch NC (posição A1)
-- **Buffer Full**: Microswitch NC (posição A0)
+- **Sensor de filamento no hotend**: Microswitch NC (A3 - CoolEnd)
+- **Sensores de filamento por ferramenta** (NC): T0=D9 (X Endstop), T1=D10 (Y Endstop), T2=D13 (SpnDir)
+- **Sensor de alimentação T1** (NO, opcional): A2 (Resume)
+- **Buffer Empty**: Microswitch NC (A1 - ABORT)
+- **Buffer Full**: Microswitch NC (A0 - HOLD)
 
 ---
 
@@ -165,13 +172,38 @@ Retorno à Posição Anterior
 - **Status**: ✅ FUNCIONAL
 - **Comunicação**: Serial 9600 baud com Klipper
 - **Motores**: Controle X (seletor) e Z (extrusora)
-- **Sensores**: Filamento + buffer com lógica NC
+- **Sensores**: Filamento no hotend (A3) + sensores por ferramenta (T0=D9, T1=D10, T2=D13) + buffer (A0, A1) + alimentação T1 (A2, opcional)
+- **UNLOAD por sensor**: Comando `UNLOAD` sem distância — para quando sensor indica ausência de filamento
+- **Load até sensor**: `loadUntilSensorAlimentacaoDeFilamento(toolNumber)` — carrega até sensor e retorna à ferramenta original
 
 #### 🖥️ **Integração Klipper**
 - **Status**: ✅ COMPLETA
 - **Macros**: T0-T2 com troca automática
 - **Estado**: Persistente entre reinicializações
 - **Shell Command**: Python bridge funcionando
+
+---
+
+## 🛒 Lista de Materiais
+
+### Eletrônica e Componentes
+
+| Item | Quantidade | Valor Aproximado | Link de Compra |
+|------|------------|------------------|----------------|
+| **Arduino Uno** | 1 | R$36 | [Mercado Livre](https://www.mercadolivre.com.br/uno-r3-smd-chip-compativel-arduino/p/MLB38492604?pdp_filters=item_id:MLB5436735706#is_advertising=true&searchVariation=MLB38492604&backend_model=search-backend&position=1&search_layout=grid&type=pad&tracking_id=e2d4de71-5b96-4051-85b2-c6d9ee0eef8d&ad_domain=VQCATCORE_LST&ad_position=1&ad_click_id=MWZmZGRiZjQtM2VhNS00OWQ5LWI4MTYtZTVlYmFmYWI3N2Jj) |
+| **CNC Shield v3** | 1 | R$ 27 | [Mercado Livre](https://www.mercadolivre.com.br/cnc-shield-v3-arduino-impressora-3d-reprap-grbl/p/MLB2039012117?pdp_filters=item_id%3AMLB2794264804#is_advertising=true&searchVariation=MLB2039012117&backend_model=search-backend&position=2&search_layout=grid&type=pad&tracking_id=e972754f-ce16-459b-8fdd-c8791484b1d4&ad_domain=VQCATCORE_LST&ad_position=2&ad_click_id=OWUzMjIzZDEtMWNiZi00N2U1LWI5OWEtM2ZkMjk5MzUyODUz) |
+| **Driver A4988** | 2 | R$ 27 | [Mercado Livre](https://www.mercadolivre.com.br/2x-driver-motor-de-passo-a4988-com-dissipador-8-35v-2a/p/MLB2039737210#polycard_client=search-desktop&search_layout=grid&position=10&type=product&tracking_id=8593d4dd-4d70-4023-9198-078e31411894&wid=MLB2168520580&sid=search) |
+| **Servo 360°** | 1 | R$ 38 | [Mercado Livre](https://www.mercadolivre.com.br/servo-digital-blutu-mg996r-360-metal-15kg-alto-torque-arduino/p/MLB40989790?pdp_filters=item_id:MLB5071204762#is_advertising=true&searchVariation=MLB40989790&backend_model=search-backend&position=1&search_layout=grid&type=pad&tracking_id=e40326b4-68c1-454e-90bc-0661325d6a58&ad_domain=VQCATCORE_LST&ad_position=1&ad_click_id=YTViOTQxNjYtN2FiZi00MzA5LWE3MDEtY2FhYWJkM2YwYTBh) |
+| **Microswitch NC** | 5 | R$19 | [Mercado Livre](https://www.mercadolivre.com.br/chave-fim-de-curso-kw10-b-micro-switch-com-haste-10/p/MLB44351264?pdp_filters=item_id:MLB5857056256) — hotend + buffer (2) + por ferramenta (3) |
+| **Microswitch NO** | 1 | opcional | Sensor de alimentação T1 (A2) |
+| **NEMA 17 Stepper Motor** | 2 | R$ 60 cada | [Mercado Livre](https://www.mercadolivre.com.br/motor-de-passo-nema-17-42kgf-14a-ender-3-impressora-3d/p/MLB2045385578?pdp_filters=item_id%3AMLB5278821864#is_advertising=true&searchVariation=MLB2045385578&backend_model=search-backend&position=1&search_layout=grid&type=pad&tracking_id=491bc2e5-8554-4de2-a27e-176f5c5717d8&ad_domain=VQCATCORE_LST&ad_position=1&ad_click_id=MTM3NDRlOWEtZDA5OC00MjliLWEzOWItNTg2ODc3ODhhMWI3) |
+| **PTFE Tubing 4mmx2,5mm OD** | 4m | R$ 70 | [Mercado Livre](https://www.mercadolivre.com.br/tubo-ptfe-para-bambu-lab-a1-mini-25mm-x-40mm/up/MLBU3464340835?pdp_filters=item_id:MLB4237039359) |
+| **Conectores PTFE PC4-M10** | R$45 | [Mercado Livre](https://www.mercadolivre.com.br/kit-5-conectores-bowden-pc401-m10-pneumatico-hotend-ptfe/up/MLBU734237438?pdp_filters=item_id:MLB1653440903) |
+| **Engrenagem MK8** | 2 | R$10 cada | [Mercado Livre](https://www.mercadolivre.com.br/1-peca-engrenagem-mk8-filamento-175mm-para-impressora-3d/up/MLBU1714610359?pdp_filters=item_id:MLB1953785178) |
+| **Parafuso e Porcas M3x30mm** | 8 | R$23 | [Mercado Livre](https://www.mercadolivre.com.br/parafuso-com-cabeca-allen-m3-x-30mm-inox--20-pecas/up/MLBU1967887623#polycard_client=search-desktop&search_layout=grid&position=7&type=product&tracking_id=5a989f37-af0b-4e14-af35-d42bb9760db1&wid=MLB2797256477&sid=search) |
+| **Parafuso e Porcas M3x12mm** | 8 | R$20 | [Mercado Livre](https://www.mercadolivre.com.br/kit-parafuso-maquina-allen-m3-x-12mm-cilindrico-20-unidades-ciser/p/MLB47070098?pdp_filters=item_id:MLB4000230637&matt_tool=48517109&matt_internal_campaign_id=301620185&matt_word=&matt_source=google&matt_campaign_id=22883155151&matt_ad_group_id=184598904365&matt_match_type=&matt_network=g&matt_device=c&matt_creative=776720678099&matt_keyword=&matt_ad_position=&matt_ad_type=pla&matt_merchant_id=211153465&matt_product_id=MLB4000230637&matt_product_partition_id=2442743515081&matt_target_id=pla-2442743515081&cq_src=google_ads&cq_cmp=22883155151&cq_net=g&cq_plt=gp&cq_med=pla&gad_source=1&gad_campaignid=22883155151&gbraid=0AAAAAD93qcC1BR4N9Z3Va3Myw2VpsMt7r&gclid=CjwKCAiAj8LLBhAkEiwAJjbY73Zq_wj2ePMLExqrYDkM1SymknsZygud99U0mP4LVqO__YWdUIlZLhoCyYIQAvD_BwE) |
+| **Rolamento 625zz** | 4 | R$ 39 | [Mercado Livre](https://www.mercadolivre.com.br/kit-10-micro-rolamento-625-zz--625zz-5x16x5mm--aco-carbono/up/MLBU730803302?pdp_filters=item_id:MLB1131351895) |
+| **Rolamento 6800zz** | 2 | R$ 23 | [Mercado Livre](https://www.mercadolivre.com.br/kit-5-rolamentos-6800-zz-medidas-10x19x5mm-cinza/p/MLB56414559?pdp_filters=item_id:MLB5709617128) |
 
 ---
 
@@ -182,21 +214,31 @@ Retorno à Posição Anterior
 #### Conexões Arduino/CNC Shield:
 
 ```cpp
-// Eixo Z - Extrusora (alimentação filamento)
+// Eixo Z - Extrusora (alimentação de filamento)
 #define extEnable 12   // Z_ENABLE
 #define extStep 4      // Z_STEP
 #define extDir 7       // Z_DIR
 
-// Eixo X - Seletor (seleção ferramenta)
+// Eixo X - Seletor (seleção de ferramenta)
 #define selEnable 8    // X_ENABLE
 #define selStep 2      // X_STEP
 #define selDir 5       // X_DIR
 
-// Servo e Sensores
-#define SERVO_PIN 11
-#define FILAMENT_SENSOR_PIN A3
-#define BUFFER_EMPTY_PIN A1
-#define BUFFER_FULL_PIN A0
+// Servo e sensores
+#define PURGA_COLETOR_PIN 11       // Coletor de purga (Z+ Endstop)
+#define FILAMENT_SENSOR_PIN A3     // Sensor no hotend (CoolEnd)
+
+// Sensores de filamento por ferramenta (NC) - UNLOAD/Load até sensor
+#define FILAMENT_SENSOR_T0_PIN 9   // X Endstop
+#define FILAMENT_SENSOR_T1_PIN 10  // Y Endstop
+#define FILAMENT_SENSOR_T2_PIN 13  // SpnDir
+
+// Sensor de alimentação T1 (NO, opcional)
+#define FILAMENT_ALIMENTATION_SENSOR_T1_PIN A2  // Resume
+
+// Buffer (NC)
+#define BUFFER_EMPTY_PIN A1   // ABORT - buffer vazio
+#define BUFFER_FULL_PIN A0   // HOLD - buffer cheio
 ```
 
 #### Impressão dos Componentes:
@@ -244,6 +286,14 @@ T0    ; Seleciona filamento 0 (completo com corte/purga)
 T1    ; Seleciona filamento 1
 T2    ; Seleciona filamento 2
 ```
+
+#### Load e Unload (comandos serial para o Arduino):
+- **LOAD \<mm\>**: Carrega filamento até sensor do hotend, depois avança distância em mm
+- **UNLOAD**: Descarrega filamento até sensor da ferramenta indicar ausência (parada automática) — **sem precisar informar distância**
+- **UNLOAD \<mm\>**: Descarrega por distância fixa (modo legado)
+- **UNLOAD_RETRACAO \<mm\>**: Descarrega com velocidade fixa (5 mm/s) para sincronização com retração do Klipper
+
+A função **loadUntilSensorAlimentacaoDeFilamento(toolNumber)** carrega filamento até o sensor da ferramenta detectar presença; move o seletor para a ferramenta, carrega até o sensor e retorna para a posição original.
 
 #### Comandos de Controle:
 ```gcode
@@ -322,10 +372,16 @@ O **TurtleNeck** é um sistema de buffer de filamento inteligente que:
 ### Configurações
 
 ```cpp
-#define BUFFER_CHECK_INTERVAL 200   // Verificação a cada 200ms
+#define BUFFER_CHECK_INTERVAL 100   // Verificação a cada 100ms
 #define IDLE_TIMEOUT 120000         // 2 minutos sem atividade
 const float STEPS_PER_MM = 151.0;   // Calibração passos/mm
 ```
+
+### Load/Unload com sensores por ferramenta
+
+- **UNLOAD** (sem distância): usa o sensor da ferramenta ativa (T0→D9, T1→D10, T2→D13) para parar quando o filamento sair (sensor NC: LOW = sem filamento).
+- **loadUntilSensorAlimentacaoDeFilamento(toolNumber)**: move para a ferramenta, carrega até o sensor detectar filamento (NC: HIGH = presente), depois retorna para a ferramenta original.
+- Sensores NC: HIGH = filamento presente, LOW = sem filamento. Sensor de alimentação T1 (NO): HIGH = presente, LOW = ausente.
 
 ---
 
@@ -501,10 +557,18 @@ copies or substantial portions of the Software.
 - [3DChameleon Original Documentation](https://github.com/3DChameleon/3DChameleon)
 - [Creality K1 Integration](https://www.creality.com/products/creality-k1)
 - [Turtle Neck](https://github.com/ArmoredTurtle/TurtleNeck)
+- [BOM Completa 3DChameleon Mk4](STLs/3DChameleonMk4/3DChameleon%20Mk4%20Electronics/BOM_3D-Chameleon-MK4_2024-12-13.csv)
 
 ---
 
 ## 🔄 Changelog
+
+### v1.1 - Sensores por ferramenta e UNLOAD/Load por sensor
+- ✅ **Sensores de filamento por ferramenta** (NC): T0=D9, T1=D10, T2=D13 (X/Y Endstop, SpnDir)
+- ✅ **UNLOAD sem distância**: Comando `UNLOAD` para automaticamente até sensor indicar ausência de filamento
+- ✅ **loadUntilSensorAlimentacaoDeFilamento(toolNumber)**: Carrega até sensor da ferramenta e retorna à posição original
+- ✅ **Sensor de alimentação T1** (NO): A2 (Resume) para monitorar filamento pré-carregado
+- ✅ **Documentação e comentários**: Código e README em português; pinos e lógica NC/NO documentados
 
 ### v1.0 - Adaptação Completa para K1/K1C
 - ✅ **Sistema de Buffer**: Integração completa com `FILAMENT_BUFFER_MOUNT.stl` + **TurtleNeck buffer**
@@ -526,9 +590,12 @@ copies or substantial portions of the Software.
 | Componente | Status | Descrição |
 |------------|--------|-----------|
 | **Sistema de Buffer** | ✅ Funcional | Alimentação automática com `FILAMENT_BUFFER_MOUNT.stl` |
+| **Sensores por ferramenta** | ✅ Implementado | T0=D9, T1=D10, T2=D13 — UNLOAD/Load até sensor |
+| **UNLOAD por sensor** | ✅ Implementado | Parada automática quando filamento sai (sem distância) |
+| **Load até sensor** | ✅ Implementado | loadUntilSensorAlimentacaoDeFilamento + retorno à ferramenta |
 | **TurtleNeck (Buffer)** | ✅ Modelos Disponíveis | Sistema de buffer TurtleNeck para filamento |
 | **Hub PTFE 3-para-1** | ✅ Implementado | Distribuição de filamentos `ptfe3to1hub_v2.stl` |
-| **Firmware Arduino** | ✅ Completo | Comunicação serial + controle de motores |
+| **Firmware Arduino** | ✅ Completo | Serial + motores + sensores NC/NO documentados |
 | **Configuração Klipper** | ✅ Funcional | Macros T0-T2 + estado persistente |
 | **Estrutura 3DChameleon** | ✅ Adaptada | Peças A/B + componentes para K1 |
 
