@@ -822,8 +822,8 @@ void unloadUntilSensorTrocaDeFilamento(int toolNumber)
   const int sensorSpeed = speedDelay / 5; // Velocidade mais lenta para detecção do sensor
 
   while (stepsUnloaded < maxSteps && !filamentGone) {
-    // Verifica estado do sensor (NC = LOW quando filamento saiu, HIGH quando filamento presente)
-    if (digitalRead(sensorPin) == HIGH) { // Sensor indica sem filamento
+    // Verifica estado do sensor (NC = LOW quando filamento saiu, LOW quando filamento presente)
+    if (digitalRead(sensorPin) == LOW) { // Sensor indica sem filamento
       filamentGone = true;
       break;
     }
@@ -948,11 +948,11 @@ void executeUnloadRetracao(int toolNumber, float distance_mm)
   // Calculate steps from distance
   long steps = (long)(distance_mm * STEPS_PER_MM);
 
-  // Fixed speed for retraction (5 mm/s)
-  // Convert to delay: 5 mm/s * 151 steps/mm = 755 steps/s
-  // Each step needs 2 pulses (HIGH + LOW) = 1510 pulses/s
-  // Delay per pulse = 1000000 / 1510 = ~662 µs per pulse
-  const int fixedRetractionSpeed = 662; // Fixed delay in microseconds (662µs = 1510 pulses/s = 755 steps/s = 5 mm/s)
+  // Velocidade fixa para retração (15 mm/s)
+  // 15 mm/s * 151 steps/mm = 2265 steps/s
+  // Cada passo = 2 pulsos (HIGH + LOW) = 4530 pulsos/s
+  // Delay por pulso = 1000000 / 4530 ≈ 221 µs
+  const int fixedRetractionSpeed = 221; // Delay em µs (221µs = 4530 pulsos/s = 2265 steps/s = 15 mm/s)
 
   Serial.println("Executando UNLOAD_RETRACAO com velocidade fixa...");
 

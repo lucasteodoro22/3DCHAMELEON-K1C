@@ -1,122 +1,61 @@
-#!/usr/bin/env python3
-"""
-Gerenciador de estado persistente para 3DChameleon
-Salva/carrega variáveis em arquivo JSON independente do Klipper
-"""
-
+import serial
 import sys
-import os
-import json
 import time
 
-# Arquivo de estado
-STATE_FILE = "/usr/data/printer_data/config/chameleon_state.json"
+# Porta que encontramos no seu teste
+device = '/dev/ttyACM0'
+baud = 9600
 
-def ensure_dir():
-    """Garante que o diretório existe"""
-    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+def enviar():
+    if len(sys.argv) < 2:
+        print("Uso: python control_arduino.py <comando>")
+        print("Exemplos:")
+        print("  python control_arduino.py T0")
+        print("  python control_arduino.py LOAD 100")
+        print("  python control_arduino.py STATUS")
+        return
 
-def load_state():
-    """Carrega estado do arquivo JSON"""
+    comando = sys.argv[1] + "\n"
+
+    # Adicionar argumentos adicionais se houver (para LOAD/UNLOAD com distancia)
+    if len(sys.argv) > 2:
+        comando = sys.argv[1] + " " + sys.argv[2] + "\n"
+
     try:
-        if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, 'r') as f:
-                return json.load(f)
-        return {}
+        # Verificar se a porta existe
+        import os
+        if not os.path.exists(device):
+            print(f"ERRO: Porta {device} não encontrada")
+            return
+
+        # Abrir porta, enviar e fechar
+        ser = serial.Serial(device, baud, timeout=1)
+        time.sleep(0.1) # Pequena pausa para estabilidade
+
+        # Limpar buffer de entrada
+        ser.reset_input_buffer()
+
+        # Enviar comando
+        ser.write(comando.encode())
+        print(f"Enviado: {comando.strip()}")
+
+        # Aguardar e ler resposta (até 2 segundos)
+        time.sleep(0.5)
+        if ser.in_waiting > 0:
+            resposta = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
+            print("Resposta do Arduino:")
+            print(resposta.strip())
+
+        ser.close()
+
+    except serial.SerialException as e:
+        print(f"ERRO de comunicação serial: {e}")
+        with open("/tmp/arduino_error.log", "a") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - Serial error: {e}\n")
     except Exception as e:
-        print(f"Erro carregando estado: {e}")
-        return {}
-
-def save_state(state):
-    """Salva estado no arquivo JSON"""
-    try:
-        ensure_dir()
-        with open(STATE_FILE, 'w') as f:
-            json.dump(state, f, indent=2)
-        print(f"Estado salvo: {state}")
-        return True
-    except Exception as e:
-        print(f"Erro salvando estado: {e}")
-        return False
-
-def set_variable(name, value):
-    """Define uma variável"""
-    state = load_state()
-
-    # Converte valor para tipo apropriado
-    try:
-        if isinstance(value, str) and value.isdigit():
-            value = int(value)
-        elif isinstance(value, str) and value.replace('.', '').isdigit():
-            value = float(value)
-    except:
-        pass
-
-    state[name] = value
-
-    if save_state(state):
-        print(f"OK: {name} = {value}")
-        return True
-    else:
-        print(f"ERRO salvando {name}")
-        return False
-
-def get_variable(name):
-    """Obtém uma variável"""
-    state = load_state()
-    value = state.get(name)
-
-    if value is not None:
-        print(f"OK: {name} = {value}")
-        return value
-    else:
-        print(f"NOT_FOUND: {name}")
-        return None
-
-def main():
-    if len(sys.argv) < 3:
-        print("Uso: python3 chameleon_state.py <acao> <nome_variavel> [valor]")
-        print("Ações:")
-        print("  SET <nome> <valor>  - Define variável")
-        print("  GET <nome>          - Obtém variável")
-        print("  SHOW                - Mostra todas")
-        print("  CLEAR               - Limpa todas")
-        sys.exit(1)
-
-    action = sys.argv[1].upper()
-    var_name = sys.argv[2]
-
-    if action == "SET":
-        if len(sys.argv) < 4:
-            print("ERRO: SET precisa de valor")
-            sys.exit(1)
-        value = sys.argv[3]
-        if not set_variable(var_name, value):
-            sys.exit(1)
-
-    elif action == "GET":
-        if get_variable(var_name) is None:
-            sys.exit(1)
-
-    elif action == "SHOW":
-        state = load_state()
-        if state:
-            print("Estado atual:")
-            for k, v in state.items():
-                print(f"  {k}: {v}")
-        else:
-            print("Estado vazio")
-
-    elif action == "CLEAR":
-        if save_state({}):
-            print("Estado limpo")
-        else:
-            print("Erro limpando estado")
-            sys.exit(1)
-
-    else:
-        print(f"Ação desconhecida: {action}")
-        sys.exit(1)
+        print(f"ERRO geral: {e}")
+        with open("/tmp/arduino_error.log", "a") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - General error: {e}\n")
 
 if __name__ == "__main__":
-    main()
+    enviar()
